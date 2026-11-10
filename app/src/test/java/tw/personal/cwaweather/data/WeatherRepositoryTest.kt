@@ -1,0 +1,238 @@
+package tw.personal.cwaweather.data
+
+import java.io.IOException
+import java.nio.file.Files
+import java.time.OffsetDateTime
+import java.util.Collections
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import retrofit2.HttpException
+import retrofit2.Response
+
+class WeatherRepositoryTest {
+    private val taipei = Place("臺北市", "中正區")
+    private val newTaipeiXindian = Place("新北市", "新店區")
+    private val now = OffsetDateTime.parse("2026-11-05T13:30:00+08:00")
+
+    private fun fixture(name: String): JsonObject {
+        val text = checkNotNull(javaClass.classLoader?.getResource(name)).readText()
+        return Json.parseToJsonElement(text).jsonObject
+    }
+
+    /** A station list holding one station with a temperature, in the shape the API returns. */
+    private fun stationsJson(county: String, town: String, lat: Double, lon: Double, id: String = "S1") =
+        Json.parseToJsonElement(
+            """{"records":{"Station":[{"StationId":"$id","StationName":"測站","GeoInfo":{"Coordinates":[
+               {"CoordinateName":"WGS84","StationLatitude":"$lat","StationLongitude":"$lon"}],
+               "CountyName":"$county","TownName":"$town"},"ObsTime":{"DateTime":"2026-11-05T13:20:00+08:00"},
+               "WeatherElement":{"AirTemperature":"24.5","Weather":"晴"}}]}}""",
+        ).jsonObject
+
+    private val noStations = Json.parseToJsonElement("""{"records":{"Station":[]}}""").jsonObject
+
+    private val threeDayDatasets = Counties.names.mapNotNull(Counties::threeDayDataset).toSet()
+
+    private class Call(val dataset: String, val query: Map<String, String>)
+
+    private class ScriptedApi(private val respond: (Call) -> JsonObject) : CwaApi {
+        val calls: MutableList<Call> = Collections.synchronizedList(mutableListOf())
+        override suspend fun datastore(dataset: String, query: Map<String, String>): JsonObject {
+            val call = Call(dataset, query)
+            calls += call
+            return respond(call)
+        }
+    }
+
+    private fun httpError(code: Int) =
+        HttpException(Response.error<JsonObject>(code, "".toResponseBody(null)))
+
+    /** Answers each dataset with the captured fixtures, and the given station lists. */
+    private fun api(
+        synoptic: JsonObject = stationsJson("臺北市", "中正區", 25.04, 121.52),
+        all: JsonObject = synoptic,
+        override: (Call) -> JsonObject? = { null },
+    ) = ScriptedApi { call ->
+        override(call) ?: when {
+            call.dataset == "O-A0003-001" -> synoptic
+            call.dataset == "O-A0001-001" -> all
+            call.dataset == "W-C0033-001" -> fixture("alerts_by_county.json")
+            call.dataset == "W-C0033-002" -> fixture("alerts_detail.json")
+            call.dataset in threeDayDatasets -> fixture("hourly.json")
+            else -> fixture("daily.json")
+        }
+    }
+
+    private fun repository(api: CwaApi, verify: suspend (String) -> Unit = {}) = WeatherRepository(
+        source = CachedSource(api, Files.createTempDirectory("api-cache").toFile()),
+        verify = verify,
+        now = { now },
+    )
+
+    @Test
+    fun loadForPlaceCombinesObservationForecastsAndAlerts() = runBlocking {
+        val snapshot = repository(api()).loadForPlace(taipei)
+
+        assertEquals(taipei, snapshot.place)
+        assertEquals("S1", snapshot.current?.station?.id)
+        assertEquals(24.5, snapshot.current?.station?.temperature)
+        assertTrue(snapshot.hourly.isNotEmpty())
+        assertTrue(snapshot.daily.isNotEmpty())
+        assertEquals(emptyList<WeatherAlert>(), snapshot.alerts)
+        assertNull(snapshot.offlineSince)
+    }
+
+    @Test
+    fun forecastsAskOnlyForTheTownAndTheNeededElements() = runBlocking {
+        val api = api()
+        repository(api).loadForPlace(taipei)
+
+        val hourly = api.calls.single { it.dataset == "F-D0047-061" }
+        assertEquals("中正區", hourly.query["LocationName"])
+        assertEquals("time", hourly.query["sort"])
+        assertTrue(checkNotNull(hourly.query["ElementName"]).contains("溫度"))
+        val daily = api.calls.single { it.dataset == "F-D0047-063" }
+        assertEquals("中正區", daily.query["LocationName"])
+        assertTrue(checkNotNull(daily.query["ElementName"]).contains("最高溫度"))
+    }
+
+    @Test
+    fun alertsCarryTheirFullTextForTheCounty() = runBlocking {
+        val api = api(synoptic = stationsJson("新北市", "新店區", 24.96, 121.51))
+        val snapshot = repository(api).loadForPlace(newTaipeiXindian)
+
+        val alert = checkNotNull(snapshot.alerts).single()
+        assertNotNull(alert.detail)
+    }
+
+    @Test
+    fun alertFailureStillShowsTheForecast() = runBlocking {
+        val api = api(override = { call -> if (call.dataset.startsWith("W-C0033")) throw IOException("down") else null })
+        val snapshot = repository(api).loadForPlace(taipei)
+
+        assertNull(snapshot.alerts)
+        assertTrue(snapshot.hourly.isNotEmpty())
+        assertNotNull(snapshot.current)
+    }
+
+    @Test
+    fun unknownCountyHasNoForecastRequests() = runBlocking {
+        val api = api(synoptic = noStations)
+        val snapshot = repository(api).loadForPlace(Place("不存在市", "某區"))
+
+        assertEquals(emptyList<HourlyForecast>(), snapshot.hourly)
+        assertEquals(emptyList<DailyForecast>(), snapshot.daily)
+        assertNull(snapshot.current)
+        assertTrue(api.calls.none { it.dataset.startsWith("F-D0047") })
+    }
+
+    @Test
+    fun largerStationListIsSkippedWhenSynopticStationsCoverTheTown() = runBlocking {
+        val api = api()
+        repository(api).loadForPlace(taipei)
+        assertTrue(api.calls.none { it.dataset == "O-A0001-001" })
+    }
+
+    @Test
+    fun largerStationListFillsInWhenSynopticStationsDoNot() = runBlocking {
+        val api = api(synoptic = noStations, all = stationsJson("臺北市", "中正區", 25.04, 121.52, id = "ALL"))
+        val snapshot = repository(api).loadForPlace(taipei)
+
+        assertEquals("ALL", snapshot.current?.station?.id)
+        assertTrue(api.calls.any { it.dataset == "O-A0001-001" })
+    }
+
+    @Test
+    fun stationInTheSameCountyIsUsedWhenTheTownHasNone() = runBlocking {
+        val api = api(synoptic = stationsJson("臺北市", "信義區", 25.03, 121.56, id = "NEARBY"))
+        val snapshot = repository(api).loadForPlace(taipei)
+        assertEquals("NEARBY", snapshot.current?.station?.id)
+    }
+
+    @Test
+    fun savedResponsesAnswerWhenTheServiceCannotBeReached() = runBlocking {
+        var offline = false
+        val api = api(override = { if (offline) throw IOException("no network") else null })
+        val repository = repository(api)
+
+        val live = repository.loadForPlace(taipei)
+        assertNull(live.offlineSince)
+
+        offline = true
+        val saved = repository.loadForPlace(taipei)
+        assertNotNull(saved.offlineSince)
+        assertEquals(live.hourly, saved.hourly)
+        assertEquals(live.current, saved.current)
+    }
+
+    @Test
+    fun unreachableServiceWithNothingSavedIsAnError() {
+        val api = api(override = { throw IOException("no network") })
+        assertThrows(IOException::class.java) { runBlocking { repository(api).loadForPlace(taipei) } }
+    }
+
+    @Test
+    fun rejectedKeyIsAnErrorEvenWithSavedData() = runBlocking {
+        var rejected = false
+        val api = api(override = { if (rejected) throw httpError(401) else null })
+        val repository = repository(api)
+        repository.loadForPlace(taipei)
+
+        rejected = true
+        val error = assertThrows(HttpException::class.java) { runBlocking { repository.loadForPlace(taipei) } }
+        assertEquals(401, error.code())
+    }
+
+    @Test
+    fun coordinatesResolveToTheNearestStationsTown() = runBlocking {
+        val snapshot = repository(api()).loadAtCoordinates(25.0401, 121.5201)
+
+        assertEquals(taipei, snapshot.place)
+        assertEquals(taipei, snapshot.current?.station?.let { Place(it.county, it.town) })
+        assertTrue(checkNotNull(snapshot.current?.distanceKm) < 1.0)
+        assertTrue(snapshot.hourly.isNotEmpty())
+    }
+
+    @Test
+    fun coordinatesOutsideTaiwanAreRejected() {
+        assertThrows(OutsideTaiwanException::class.java) {
+            runBlocking { repository(api()).loadAtCoordinates(35.68, 139.69) }
+        }
+    }
+
+    @Test
+    fun townsComeFromTheCountyForecastDataset() = runBlocking {
+        val api = api()
+        assertEquals(listOf("中正區"), repository(api).towns("臺北市"))
+        assertEquals("F-D0047-061", api.calls.single().dataset)
+    }
+
+    @Test
+    fun townsOfAnUnknownCountyAreEmptyWithoutARequest() = runBlocking {
+        val api = api()
+        assertEquals(emptyList<String>(), repository(api).towns("不存在市"))
+        assertTrue(api.calls.isEmpty())
+    }
+
+    @Test
+    fun verifyKeyPassesTheCandidateAndPropagatesFailure() {
+        val seen = mutableListOf<String>()
+        val repository = repository(api()) { candidate ->
+            seen += candidate
+            if (candidate == "bad") throw httpError(403)
+        }
+        runBlocking { repository.verifyKey("good") }
+        assertThrows(HttpException::class.java) { runBlocking { repository.verifyKey("bad") } }
+        assertEquals(listOf("good", "bad"), seen)
+        assertFalse(seen.isEmpty())
+    }
+}

@@ -20,7 +20,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import tw.personal.cwaweather.ui.WeatherScreen
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: WeatherViewModel by viewModels()
+    private val viewModel: WeatherViewModel by viewModels { WeatherViewModel.Factory }
     private var showPicker by mutableStateOf(false)
 
     private val locationPermission =
