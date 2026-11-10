@@ -26,6 +26,14 @@ android {
 }
 
 dependencies {
+    constraints {
+        // play-services-location pulls in fragment 1.1.0 transitively. The app has no fragments, but
+        // lint (InvalidFragmentVersionForActivityResult) wants 1.3.0+ next to registerForActivityResult.
+        implementation("androidx.fragment:fragment:1.8.9") {
+            because("raise the transitive fragment 1.1.0 from play-services-location")
+        }
+    }
+
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
