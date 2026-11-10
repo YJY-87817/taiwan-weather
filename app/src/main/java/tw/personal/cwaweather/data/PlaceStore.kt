@@ -1,10 +1,12 @@
 package tw.personal.cwaweather.data
 
 import android.content.Context
+import android.content.SharedPreferences
+import androidx.core.content.edit
 
 /** Keeps the manually chosen place and the favorites, in the order they were added. */
-class PlaceStore(context: Context) {
-    private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+class PlaceStore(private val prefs: SharedPreferences) {
+    constructor(context: Context) : this(context.getSharedPreferences("settings", Context.MODE_PRIVATE))
 
     var selected: Place?
         get() {
@@ -13,7 +15,10 @@ class PlaceStore(context: Context) {
             return Place(county, town)
         }
         set(value) {
-            prefs.edit().putString(KEY_COUNTY, value?.county).putString(KEY_TOWN, value?.town).apply()
+            prefs.edit {
+                putString(KEY_COUNTY, value?.county)
+                putString(KEY_TOWN, value?.town)
+            }
         }
 
     var favorites: List<Place>
@@ -23,7 +28,7 @@ class PlaceStore(context: Context) {
         }
         set(value) {
             val text = value.joinToString("\n") { "${it.county}$SEPARATOR${it.town}" }
-            prefs.edit().putString(KEY_FAVORITES, text).apply()
+            prefs.edit { putString(KEY_FAVORITES, text) }
         }
 
     private companion object {
