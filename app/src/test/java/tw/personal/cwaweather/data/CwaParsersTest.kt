@@ -1,5 +1,6 @@
 package tw.personal.cwaweather.data
 
+import java.time.LocalDate
 import java.time.OffsetDateTime
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -55,6 +56,14 @@ class CwaParsersTest {
             if (high != null && low != null) assertTrue(high >= low)
         }
         assertTrue(daily.count { it.high != null && it.low != null } >= 6)
+    }
+
+    @Test
+    fun dailyTodayFollowsTaiwanCalendarWhateverThePhoneTimeZone() {
+        // 2026-11-05 23:30 in Taiwan is already 11-06 on a phone set to UTC+9.
+        val tokyoPhone = OffsetDateTime.parse("2026-11-06T00:30:00+09:00")
+        val daily = parseDaily(fixture("daily.json"), "中正區", tokyoPhone)
+        assertEquals(LocalDate.of(2026, 11, 5), daily.first().date)
     }
 
     @Test

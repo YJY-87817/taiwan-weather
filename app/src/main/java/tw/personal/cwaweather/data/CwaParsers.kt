@@ -160,12 +160,14 @@ fun parseDaily(root: JsonObject, town: String, now: OffsetDateTime): List<DailyF
     val weather = elementPoints(location, "天氣現象")
     val rain = elementPoints(location, "12小時降雨機率")
 
-    val today = now.toLocalDate()
-    val dates = (highs + lows + weather).map { it.start.toLocalDate() }.distinct().sorted()
+    // Dates are Taiwan calendar days whatever the phone's time zone is.
+    fun ForecastPoint.taiwanDate() = start.withOffsetSameInstant(taiwanOffset).toLocalDate()
+    val today = now.withOffsetSameInstant(taiwanOffset).toLocalDate()
+    val dates = (highs + lows + weather).map { it.taiwanDate() }.distinct().sorted()
         .filterNot { it.isBefore(today) }
 
     return dates.map { date ->
-        fun onDate(points: List<ForecastPoint>) = points.filter { it.start.toLocalDate() == date }
+        fun onDate(points: List<ForecastPoint>) = points.filter { it.taiwanDate() == date }
         // Prefer the daytime period's description so each row reads as that day's weather.
         val dayWeather = onDate(weather).let { periods ->
             periods.firstOrNull { it.start.hour in 6..11 } ?: periods.firstOrNull()
