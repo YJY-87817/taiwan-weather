@@ -1,8 +1,11 @@
 package tw.personal.cwaweather
 
 import android.app.Application
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -12,12 +15,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import tw.personal.cwaweather.data.CredentialStore
+import tw.personal.cwaweather.data.FusedLocationProvider
+import tw.personal.cwaweather.data.LocationProvider
 import tw.personal.cwaweather.data.LocationUnavailableException
 import tw.personal.cwaweather.data.OutsideTaiwanException
 import tw.personal.cwaweather.data.Place
 import tw.personal.cwaweather.data.PlaceStore
 import tw.personal.cwaweather.data.WeatherRepository
 import tw.personal.cwaweather.data.WeatherSnapshot
+import tw.personal.cwaweather.data.WeatherSource
 
 data class WeatherUiState(
     val loading: Boolean = false,
@@ -29,10 +35,12 @@ data class WeatherUiState(
     val askForKey: Boolean = false,
 )
 
-class WeatherViewModel(application: Application) : AndroidViewModel(application) {
-    private val credentials = CredentialStore(application)
-    private val repository = WeatherRepository(application, credentials)
-    private val places = PlaceStore(application)
+class WeatherViewModel(
+    private val credentials: CredentialStore,
+    private val repository: WeatherSource,
+    private val places: PlaceStore,
+    private val locationProvider: LocationProvider,
+) : ViewModel() {
     private val state = MutableStateFlow(WeatherUiState(favorites = places.favorites))
     private var loadJob: Job? = null
     private var started = false
@@ -91,7 +99,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
 
     fun loadDeviceLocation() {
         launchLoad(state.value.place, usesDeviceLocation = true) {
-            val location = repository.deviceLocation()
+            val location = locationProvider.current()
             // Forget the chosen place only after the device location worked.
             repository.loadAtCoordinates(location.latitude, location.longitude)
                 .also { places.selected = null }
@@ -151,5 +159,20 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
         }
         is IOException -> "無法連線到氣象署，這個地點也沒有可用的已儲存資料。"
         else -> "資料讀取失敗（${error.javaClass.simpleName}），請稍後再試。"
+    }
+
+    companion object {
+        val Factory = viewModelFactory {
+            initializer {
+                val application = checkNotNull(this[APPLICATION_KEY]) as Application
+                val credentials = CredentialStore(application)
+                WeatherViewModel(
+                    credentials = credentials,
+                    repository = WeatherRepository.create(application, credentials),
+                    places = PlaceStore(application),
+                    locationProvider = FusedLocationProvider(application),
+                )
+            }
+        }
     }
 }

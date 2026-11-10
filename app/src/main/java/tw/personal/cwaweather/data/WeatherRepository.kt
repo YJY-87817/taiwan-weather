@@ -1,10 +1,6 @@
 package tw.personal.cwaweather.data
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.location.Location
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import java.io.File
 import java.time.OffsetDateTime
 import kotlinx.coroutines.CancellationException
@@ -13,21 +9,16 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
-class OutsideTaiwanException : Exception()
-class LocationUnavailableException : Exception()
+class WeatherRepository(
+    private val source: CachedSource,
+    private val verify: suspend (String) -> Unit,
+    private val now: () -> OffsetDateTime = OffsetDateTime::now,
+) : WeatherSource {
+    override suspend fun verifyKey(candidate: String) = verify(candidate)
 
-class WeatherRepository(private val context: Context, credentials: CredentialStore) {
-    private val source = CachedSource(CwaApi.create { credentials.apiKey }, File(context.filesDir, "api-cache"))
-
-    /** Throws if CWA rejects the key or cannot be reached. Never answered from the cache. */
-    suspend fun verifyKey(candidate: String) {
-        CwaApi.create { candidate }.datastore("W-C0033-001")
-    }
-
-    suspend fun loadForPlace(place: Place): WeatherSnapshot = withContext(Dispatchers.IO) {
+    override suspend fun loadForPlace(place: Place): WeatherSnapshot = withContext(Dispatchers.IO) {
         source.prune()
         val tracker = OfflineTracker()
         // The observation loads alongside the forecasts instead of before them.
@@ -37,7 +28,7 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
         }
     }
 
-    suspend fun loadAtCoordinates(latitude: Double, longitude: Double): WeatherSnapshot =
+    override suspend fun loadAtCoordinates(latitude: Double, longitude: Double): WeatherSnapshot =
         withContext(Dispatchers.IO) {
             source.prune()
             val tracker = OfflineTracker()
@@ -45,18 +36,9 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
             snapshot(place, CompletableDeferred(current), tracker)
         }
 
-    suspend fun towns(county: String): List<String> = withContext(Dispatchers.IO) {
+    override suspend fun towns(county: String): List<String> = withContext(Dispatchers.IO) {
         val dataset = Counties.threeDayDataset(county) ?: return@withContext emptyList()
         parseTownNames(source.fetch(dataset, mapOf("ElementName" to "溫度"), OfflineTracker()))
-    }
-
-    /** Callers must already hold ACCESS_COARSE_LOCATION. */
-    @SuppressLint("MissingPermission")
-    suspend fun deviceLocation(): Location {
-        val client = LocationServices.getFusedLocationProviderClient(context)
-        return client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null).await()
-            ?: client.lastLocation.await()
-            ?: throw LocationUnavailableException()
     }
 
     private suspend fun snapshot(
@@ -113,7 +95,7 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
             mapOf("LocationName" to place.town, "ElementName" to "溫度,天氣現象,3小時降雨機率", "sort" to "time"),
             tracker,
         )
-        return parseHourly(root, place.town, OffsetDateTime.now())
+        return parseHourly(root, place.town, now())
     }
 
     private suspend fun daily(place: Place, tracker: OfflineTracker): List<DailyForecast> {
@@ -127,7 +109,7 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
             ),
             tracker,
         )
-        return parseDaily(root, place.town, OffsetDateTime.now())
+        return parseDaily(root, place.town, now())
     }
 
     /** A failure here returns null so the forecast can still be shown. */
@@ -136,7 +118,7 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
             byCounty = source.fetch("W-C0033-001", tracker = tracker),
             details = source.fetch("W-C0033-002", tracker = tracker),
             county = county,
-            now = OffsetDateTime.now(),
+            now = now(),
         )
     } catch (e: CancellationException) {
         throw e
@@ -146,8 +128,13 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
 
     private fun Station.inTown(place: Place) = county == place.county && town == place.town
 
-    private companion object {
-        const val SYNOPTIC_DATASET = "O-A0003-001"
-        const val ALL_STATIONS_DATASET = "O-A0001-001"
+    companion object {
+        private const val SYNOPTIC_DATASET = "O-A0003-001"
+        private const val ALL_STATIONS_DATASET = "O-A0001-001"
+
+        fun create(context: Context, credentials: CredentialStore) = WeatherRepository(
+            source = CachedSource(CwaApi.create { credentials.apiKey }, File(context.filesDir, "api-cache")),
+            verify = { candidate -> CwaApi.create { candidate }.datastore("W-C0033-001") },
+        )
     }
 }
