@@ -69,6 +69,14 @@ class CachedSourceTest {
     }
 
     @Test
+    fun failedSaveDoesNotFailLiveResponse() = runBlocking {
+        // A regular file where the cache directory should be makes every write fail.
+        val blocker = Files.createTempFile("not-a-directory", "").toFile()
+        val result = CachedSource(FakeApi { saved }, blocker).fetch("A", tracker = OfflineTracker())
+        assertEquals(saved, result)
+    }
+
+    @Test
     fun differentQueryDoesNotReuseSavedResponse() {
         val api = FakeApi { saved }
         val source = sourceWithSavedResponse(api)

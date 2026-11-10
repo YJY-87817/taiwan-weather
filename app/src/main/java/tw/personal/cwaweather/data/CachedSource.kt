@@ -39,7 +39,8 @@ class CachedSource(private val api: CwaApi, private val directory: File) {
             if (e.code() < 500) throw e
             return readSaved(file, tracker) ?: throw e
         }
-        save(file, response)
+        // A failed write must not turn a good response into an error.
+        runCatching { save(file, response) }
         return response
     }
 
@@ -55,7 +56,10 @@ class CachedSource(private val api: CwaApi, private val directory: File) {
         directory.mkdirs()
         val temporary = File(directory, "${file.name}.tmp")
         temporary.writeText(response.toString())
-        temporary.renameTo(file)
+        if (!temporary.renameTo(file)) {
+            temporary.delete()
+            throw IOException("Could not replace ${file.name}")
+        }
     }
 
     private fun fileFor(dataset: String, query: Map<String, String>): File {
