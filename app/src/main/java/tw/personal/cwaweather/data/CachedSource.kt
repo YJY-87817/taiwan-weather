@@ -23,8 +23,20 @@ class OfflineTracker {
 /**
  * Saves each raw API response and falls back to the saved copy when the service cannot be reached.
  * Authorization failures are not hidden by old data, so a bad key still surfaces as an error.
+ * A saved copy older than [maxAgeMillis] is not used, so stale weather is never shown as current.
  */
-class CachedSource(private val api: CwaApi, private val directory: File) {
+class CachedSource(
+    private val api: CwaApi,
+    private val directory: File,
+    private val maxAgeMillis: Long = DEFAULT_MAX_AGE_MILLIS,
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
+    /** Deletes saved responses that are too old to be used, so the cache does not grow forever. */
+    fun prune() {
+        val cutoff = clock() - maxAgeMillis
+        directory.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
+    }
+
     suspend fun fetch(
         dataset: String,
         query: Map<String, String> = emptyMap(),
@@ -39,12 +51,13 @@ class CachedSource(private val api: CwaApi, private val directory: File) {
             if (e.code() < 500) throw e
             return readSaved(file, tracker) ?: throw e
         }
-        save(file, response)
+        // A failed write must not turn a good response into an error.
+        runCatching { save(file, response) }
         return response
     }
 
     private fun readSaved(file: File, tracker: OfflineTracker): JsonObject? {
-        if (!file.exists()) return null
+        if (!file.exists() || clock() - file.lastModified() > maxAgeMillis) return null
         val saved = runCatching { Json.parseToJsonElement(file.readText()).jsonObject }.getOrNull()
             ?: return null
         tracker.record(file.lastModified())
@@ -55,7 +68,14 @@ class CachedSource(private val api: CwaApi, private val directory: File) {
         directory.mkdirs()
         val temporary = File(directory, "${file.name}.tmp")
         temporary.writeText(response.toString())
-        temporary.renameTo(file)
+        if (!temporary.renameTo(file)) {
+            temporary.delete()
+            throw IOException("Could not replace ${file.name}")
+        }
+    }
+
+    companion object {
+        const val DEFAULT_MAX_AGE_MILLIS = 24L * 60 * 60 * 1000
     }
 
     private fun fileFor(dataset: String, query: Map<String, String>): File {

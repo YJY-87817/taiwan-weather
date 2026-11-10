@@ -35,8 +35,16 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
     private val places = PlaceStore(application)
     private val state = MutableStateFlow(WeatherUiState(favorites = places.favorites))
     private var loadJob: Job? = null
+    private var started = false
 
     val uiState: StateFlow<WeatherUiState> = state
+
+    /**
+     * True only the first time it is called on this ViewModel. A recreated activity keeps the
+     * ViewModel and must not reload, but a new process (after the system killed the old one)
+     * gets a new ViewModel and still needs its first load.
+     */
+    fun claimStart(): Boolean = !started.also { started = true }
 
     fun hasApiKey(): Boolean = credentials.apiKey.isNotBlank()
 
@@ -75,15 +83,18 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectPlace(place: Place) {
-        places.selected = place
-        launchLoad(place, usesDeviceLocation = false) { repository.loadForPlace(place) }
+        launchLoad(place, usesDeviceLocation = false) {
+            // Remembered only once it loads, so a failure keeps the previous choice.
+            repository.loadForPlace(place).also { places.selected = place }
+        }
     }
 
     fun loadDeviceLocation() {
-        places.selected = null
         launchLoad(state.value.place, usesDeviceLocation = true) {
             val location = repository.deviceLocation()
+            // Forget the chosen place only after the device location worked.
             repository.loadAtCoordinates(location.latitude, location.longitude)
+                .also { places.selected = null }
         }
     }
 
@@ -138,7 +149,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
             401, 403 -> "授權碼無效或已失效，請重新輸入。"
             else -> "氣象署服務回應錯誤（HTTP ${error.code()}），請稍後再試。"
         }
-        is IOException -> "無法連線到氣象署，這個地點也沒有已儲存的資料。"
+        is IOException -> "無法連線到氣象署，這個地點也沒有可用的已儲存資料。"
         else -> "資料讀取失敗（${error.javaClass.simpleName}），請稍後再試。"
     }
 }
