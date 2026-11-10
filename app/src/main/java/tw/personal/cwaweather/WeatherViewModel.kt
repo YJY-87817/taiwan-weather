@@ -149,7 +149,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
             401, 403 -> "授權碼無效或已失效，請重新輸入。"
             else -> "氣象署服務回應錯誤（HTTP ${error.code()}），請稍後再試。"
         }
-        is IOException -> "無法連線到氣象署，這個地點也沒有已儲存的資料。"
+        is IOException -> "無法連線到氣象署，這個地點也沒有可用的已儲存資料。"
         else -> "資料讀取失敗（${error.javaClass.simpleName}），請稍後再試。"
     }
 }

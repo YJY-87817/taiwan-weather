@@ -8,6 +8,8 @@ import com.google.android.gms.location.Priority
 import java.io.File
 import java.time.OffsetDateTime
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -31,16 +33,21 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
     }
 
     suspend fun loadForPlace(place: Place): WeatherSnapshot = withContext(Dispatchers.IO) {
+        source.prune()
         val tracker = OfflineTracker()
-        val current = currentForPlace(place, tracker)
-        snapshot(place, current, tracker)
+        // The observation loads alongside the forecasts instead of before them.
+        coroutineScope {
+            val current = async { currentForPlace(place, tracker) }
+            snapshot(place, current, tracker)
+        }
     }
 
     suspend fun loadAtCoordinates(latitude: Double, longitude: Double): WeatherSnapshot =
         withContext(Dispatchers.IO) {
+            source.prune()
             val tracker = OfflineTracker()
             val (place, current) = resolveByCoordinates(latitude, longitude, tracker)
-            snapshot(place, current, tracker)
+            snapshot(place, CompletableDeferred(current), tracker)
         }
 
     suspend fun towns(county: String): List<String> = withContext(Dispatchers.IO) {
@@ -57,14 +64,18 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
             ?: throw LocationUnavailableException()
     }
 
-    private suspend fun snapshot(place: Place, current: CurrentWeather?, tracker: OfflineTracker) =
+    private suspend fun snapshot(
+        place: Place,
+        current: Deferred<CurrentWeather?>,
+        tracker: OfflineTracker,
+    ) =
         coroutineScope {
             val hourly = async { hourly(place, tracker) }
             val daily = async { daily(place, tracker) }
             val alerts = async { alerts(place.county, tracker) }
             WeatherSnapshot(
                 place = place,
-                current = current,
+                current = current.await(),
                 hourly = hourly.await(),
                 daily = daily.await(),
                 alerts = alerts.await(),
@@ -81,8 +92,11 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
         longitude: Double,
         tracker: OfflineTracker,
     ): Pair<Place, CurrentWeather> {
-        val synoptic = stations(SYNOPTIC_DATASET, tracker)
-        val all = stations(ALL_STATIONS_DATASET, tracker)
+        val (synoptic, all) = coroutineScope {
+            val synopticStations = async { stations(SYNOPTIC_DATASET, tracker) }
+            val allStations = async { stations(ALL_STATIONS_DATASET, tracker) }
+            synopticStations.await() to allStations.await()
+        }
 
         fun List<Station>.nearest() = map { it to distanceKm(latitude, longitude, it.latitude, it.longitude) }
             .minByOrNull { it.second }
@@ -98,6 +112,7 @@ class WeatherRepository(private val context: Context, credentials: CredentialSto
 
     /** Prefers a synoptic station in the town, then any station there, then one in the county. */
     private suspend fun currentForPlace(place: Place, tracker: OfflineTracker): CurrentWeather? {
+        // The larger list is only requested if the synoptic stations do not cover the town.
         val synoptic = stations(SYNOPTIC_DATASET, tracker)
         synoptic.firstOrNull { it.inTown(place) }?.let { return CurrentWeather(it, null) }
         val all = stations(ALL_STATIONS_DATASET, tracker)

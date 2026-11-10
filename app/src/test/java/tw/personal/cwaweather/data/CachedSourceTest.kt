@@ -68,6 +68,42 @@ class CachedSourceTest {
         }
     }
 
+    private fun ageSavedResponses(hours: Long) {
+        val time = System.currentTimeMillis() - hours * 60 * 60 * 1000
+        directory.listFiles()!!.forEach { it.setLastModified(time) }
+    }
+
+    @Test
+    fun expiredSavedResponseIsNotUsed() {
+        val api = FakeApi { saved }
+        val source = sourceWithSavedResponse(api)
+        ageSavedResponses(hours = 25)
+        api.result = { throw IOException("offline") }
+        assertThrows(IOException::class.java) {
+            runBlocking { source.fetch("A", mapOf("q" to "1"), OfflineTracker()) }
+        }
+    }
+
+    @Test
+    fun recentSavedResponseIsStillUsed() = runBlocking {
+        val api = FakeApi { saved }
+        val source = sourceWithSavedResponse(api)
+        ageSavedResponses(hours = 23)
+        api.result = { throw IOException("offline") }
+        assertEquals(saved, source.fetch("A", mapOf("q" to "1"), OfflineTracker()))
+    }
+
+    @Test
+    fun pruneDeletesOnlyExpiredResponses() {
+        val source = sourceWithSavedResponse(FakeApi { saved })
+        runBlocking { source.fetch("B", tracker = OfflineTracker()) }
+        val old = directory.listFiles()!!.first()
+        old.setLastModified(System.currentTimeMillis() - 25 * 60 * 60 * 1000)
+        source.prune()
+        assertEquals(1, directory.listFiles()!!.size)
+        assertEquals(false, old.exists())
+    }
+
     @Test
     fun failedSaveDoesNotFailLiveResponse() = runBlocking {
         // A regular file where the cache directory should be makes every write fail.
