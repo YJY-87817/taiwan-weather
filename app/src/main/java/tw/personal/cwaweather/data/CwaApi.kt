@@ -18,10 +18,13 @@ interface CwaApi {
     ): JsonObject
 
     companion object {
+        /** Every [create] builds on this one, so they share its connections and threads. */
+        private val sharedClient by lazy { OkHttpClient() }
+
         /** [apiKey] is read on every request, so a changed key applies immediately. */
         fun create(apiKey: () -> String): CwaApi {
             // The key is added here so it stays out of call sites. Do not add URL logging to this client.
-            val client = OkHttpClient.Builder()
+            val client = sharedClient.newBuilder()
                 .addInterceptor { chain ->
                     val request = chain.request()
                     val url = request.url.newBuilder()

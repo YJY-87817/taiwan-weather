@@ -35,7 +35,10 @@ class WeatherRepository(
 
     override suspend fun towns(county: String): List<String> = withContext(Dispatchers.IO) {
         val dataset = Counties.threeDayDataset(county) ?: return@withContext emptyList()
-        parseTownNames(source.fetch(dataset, mapOf("ElementName" to "溫度"), OfflineTracker()))
+        // Town names hardly ever change, so the list is reused for as long as a saved copy is kept.
+        parseTownNames(
+            source.fetch(dataset, mapOf("ElementName" to "溫度"), OfflineTracker(), TOWN_LIST_FRESH_MILLIS),
+        )
     }
 
     /**
@@ -89,7 +92,8 @@ class WeatherRepository(
     }
 
     private suspend fun stations(dataset: String, tracker: OfflineTracker) =
-        parseStations(source.fetch(dataset, tracker = tracker)).filter { it.temperature != null }
+        parseStations(source.fetch(dataset, tracker = tracker, freshMillis = STATIONS_FRESH_MILLIS))
+            .filter { it.temperature != null }
 
     private suspend fun resolveByCoordinates(
         latitude: Double,
@@ -173,6 +177,11 @@ class WeatherRepository(
     companion object {
         private const val SYNOPTIC_DATASET = "O-A0003-001"
         private const val ALL_STATIONS_DATASET = "O-A0001-001"
+
+        // Stations report every ten minutes or every hour, and the lists cover the whole country,
+        // so they are shared between places for a little longer than the forecasts.
+        private const val STATIONS_FRESH_MILLIS = 2L * 60 * 1000
+        private const val TOWN_LIST_FRESH_MILLIS = CachedSource.DEFAULT_MAX_AGE_MILLIS
 
         fun create(context: Context, credentials: CredentialStore) = WeatherRepository(
             source = CachedSource(CwaApi.create { credentials.apiKey }, File(context.filesDir, "api-cache")),
