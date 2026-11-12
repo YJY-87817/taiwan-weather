@@ -7,6 +7,7 @@ import java.util.Collections
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
@@ -37,6 +38,10 @@ class WeatherRepositoryTest {
                "CountyName":"$county","TownName":"$town"},"ObsTime":{"DateTime":"2026-11-05T13:20:00+08:00"},
                "WeatherElement":{"AirTemperature":"24.5","Weather":"晴"}}]}}""",
         ).jsonObject
+
+    private fun stationList(vararg lists: JsonObject) = Json.parseToJsonElement(
+        """{"records":{"Station":${lists.flatMap { it.getValue("records").jsonObject.getValue("Station").jsonArray }}}}""",
+    ).jsonObject
 
     private val noStations = Json.parseToJsonElement("""{"records":{"Station":[]}}""").jsonObject
 
@@ -156,6 +161,60 @@ class WeatherRepositoryTest {
         val api = api(synoptic = stationsJson("臺北市", "信義區", 25.03, 121.56, id = "NEARBY"))
         val snapshot = repository(api).loadForPlace(taipei)
         assertEquals("NEARBY", snapshot.current?.station?.id)
+    }
+
+    // The forecast fixture puts 中正區 at 25.046, 121.517.
+    @Test
+    fun townWithoutAStationUsesTheNearestOneNotTheFirstListed() = runBlocking {
+        val api = api(
+            synoptic = stationList(
+                stationsJson("臺北市", "北投區", 25.18, 121.54, id = "FAR"),
+                stationsJson("臺北市", "信義區", 25.03, 121.56, id = "NEARBY"),
+            ),
+        )
+        val current = repository(api).loadForPlace(taipei).current
+
+        assertEquals("NEARBY", current?.station?.id)
+        assertEquals(4.7, current!!.distanceKm!!, 0.5)
+    }
+
+    @Test
+    fun nearestStationMayBeInANeighbouringCounty() = runBlocking {
+        val api = api(
+            synoptic = stationsJson("臺北市", "北投區", 25.18, 121.54, id = "SAME_COUNTY"),
+            all = stationsJson("新北市", "永和區", 25.01, 121.51, id = "NEIGHBOUR"),
+        )
+        assertEquals("NEIGHBOUR", repository(api).loadForPlace(taipei).current?.station?.id)
+    }
+
+    @Test
+    fun withoutTheTownsPositionAStationInTheCountyIsUsed() = runBlocking {
+        val noPosition = Json.parseToJsonElement(
+            """{"records":{"Locations":[{"Location":[{"LocationName":"中正區","WeatherElement":[]}]}]}}""",
+        ).jsonObject
+        val api = api(
+            synoptic = stationsJson("新北市", "永和區", 25.01, 121.51, id = "NEIGHBOUR"),
+            all = stationsJson("臺北市", "北投區", 25.18, 121.54, id = "SAME_COUNTY"),
+            override = { call -> noPosition.takeIf { call.dataset in threeDayDatasets } },
+        )
+        val current = repository(api).loadForPlace(taipei).current
+
+        assertEquals("SAME_COUNTY", current?.station?.id)
+        assertNull(current?.distanceKm)
+    }
+
+    @Test
+    fun stationInTheTownIsKeptEvenWhenAnotherIsCloser() = runBlocking {
+        val api = api(
+            synoptic = stationList(
+                stationsJson("新北市", "永和區", 25.045, 121.517, id = "CLOSER"),
+                stationsJson("臺北市", "中正區", 25.03, 121.51, id = "IN_TOWN"),
+            ),
+        )
+        val current = repository(api).loadForPlace(taipei).current
+
+        assertEquals("IN_TOWN", current?.station?.id)
+        assertNull(current?.distanceKm)
     }
 
     @Test

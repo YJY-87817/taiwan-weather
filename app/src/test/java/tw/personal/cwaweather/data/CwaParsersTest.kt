@@ -31,6 +31,15 @@ class CwaParsersTest {
         assertTrue(station.longitude in 117.0..123.0)
         assertNotNull(station.observedAt)
         assertNotNull(station.temperature)
+        assertEquals(26.7, station.altitude!!, 0.01)
+    }
+
+    @Test
+    fun townPositionComesFromTheForecast() {
+        val position = parseTownCoordinates(fixture("hourly.json"), "中正區")
+        assertEquals(25.046058, position!!.latitude, 1e-6)
+        assertEquals(121.516565, position.longitude, 1e-6)
+        assertNull(parseTownCoordinates(fixture("hourly.json"), "不存在區"))
     }
 
     @Test
@@ -74,6 +83,24 @@ class CwaParsersTest {
         assertEquals(OffsetDateTime.parse("2026-11-05T23:00:00+08:00"), alert.start)
         assertEquals(OffsetDateTime.parse("2026-11-06T23:00:00+08:00"), alert.end)
         assertTrue(alert.detail.orEmpty().startsWith("一、概述"))
+    }
+
+    @Test
+    fun alertTextComesFromTheBulletinThatNamesTheCounty() {
+        fun bulletin(text: String, area: String) = """{"contents":{"content":{"contentText":"$text"}},
+            "hazardConditions":{"hazards":{"hazard":[{"info":{"phenomena":"大雨","significance":"特報",
+            "affectedAreas":{"location":[{"locationName":"$area"}]}}}]}}}"""
+        val details = Json.parseToJsonElement(
+            """{"records":{"record":[${bulletin("北部", "基隆市")},${bulletin("南部", "高雄市")}]}}""",
+        ).jsonObject
+        fun byCounty(county: String) = Json.parseToJsonElement(
+            """{"records":{"location":[{"locationName":"$county","hazardConditions":{"hazards":[
+               {"info":{"phenomena":"大雨","significance":"特報"},"validTime":{}}]}}]}}""",
+        ).jsonObject
+
+        assertEquals("南部", parseAlerts(byCounty("高雄市"), details, "高雄市", capturedAt).single().detail)
+        // 屏東縣 is named by neither bulletin; areas are not always counties, so one is still shown.
+        assertEquals("北部", parseAlerts(byCounty("屏東縣"), details, "屏東縣", capturedAt).single().detail)
     }
 
     @Test

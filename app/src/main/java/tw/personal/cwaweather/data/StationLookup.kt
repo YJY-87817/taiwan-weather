@@ -17,6 +17,11 @@ fun distanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     return 6371.0 * 2 * atan2(sqrt(a), sqrt(1 - a))
 }
 
+/** The station closest to [point] and its distance in kilometres, or null if there are none. */
+fun nearestStation(point: Coordinates, stations: List<Station>): Pair<Station, Double>? =
+    stations.map { it to distanceKm(point.latitude, point.longitude, it.latitude, it.longitude) }
+        .minByOrNull { it.second }
+
 /**
  * The dense station list decides the town; the synoptic list is preferred for observations when
  * one is within [PREFERRED_SYNOPTIC_RANGE_KM].
