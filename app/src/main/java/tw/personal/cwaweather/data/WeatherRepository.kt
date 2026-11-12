@@ -10,6 +10,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
+import retrofit2.HttpException
 
 class WeatherRepository(
     private val source: CachedSource,
@@ -40,6 +41,9 @@ class WeatherRepository(
     /**
      * [current] loads alongside the forecasts instead of before them. It is handed the town's
      * position, which comes from the 3-day forecast response and is only awaited if it is needed.
+     *
+     * The observation and the two forecasts fail separately, so what did load is still shown. The
+     * load as a whole fails only when all three do, or when CWA rejects the key.
      */
     private suspend fun snapshot(
         place: Place,
@@ -47,20 +51,42 @@ class WeatherRepository(
         current: suspend (townCoordinates: Deferred<Coordinates?>) -> CurrentWeather?,
     ) =
         coroutineScope {
-            val threeDay = async { threeDayForecast(place, tracker) }
-            val townCoordinates = async { threeDay.await()?.let { parseTownCoordinates(it, place.town) } }
-            val observation = async { current(townCoordinates) }
-            val daily = async { daily(place, tracker) }
+            val threeDay = async { attempt { threeDayForecast(place, tracker) } }
+            val townCoordinates = async {
+                threeDay.await().getOrNull()?.let { parseTownCoordinates(it, place.town) }
+            }
+            val observation = async { attempt { current(townCoordinates) } }
+            val week = async { attempt { daily(place, tracker) } }
             val alerts = async { alerts(place.county, tracker) }
+
+            val currentResult = observation.await()
+            val hourlyResult = threeDay.await().map { root ->
+                root?.let { parseHourly(it, place.town, now()) }.orEmpty()
+            }
+            val dailyResult = week.await()
+            val results = listOf(currentResult, hourlyResult, dailyResult)
+            if (results.all { it.isFailure }) throw checkNotNull(results.first().exceptionOrNull())
+
             WeatherSnapshot(
                 place = place,
-                current = observation.await(),
-                hourly = threeDay.await()?.let { parseHourly(it, place.town, now()) }.orEmpty(),
-                daily = daily.await(),
+                current = currentResult.getOrNull(),
+                hourly = hourlyResult.getOrNull(),
+                daily = dailyResult.getOrNull(),
                 alerts = alerts.await(),
                 offlineSince = tracker.offlineSince,
+                currentUnavailable = currentResult.isFailure,
             )
         }
+
+    /** Turns a failure into a result, except a rejected key, which has to reach the screen. */
+    private suspend fun <T> attempt(load: suspend () -> T): Result<T> = try {
+        Result.success(load())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        if (e is HttpException && (e.code() == 401 || e.code() == 403)) throw e
+        Result.failure(e)
+    }
 
     private suspend fun stations(dataset: String, tracker: OfflineTracker) =
         parseStations(source.fetch(dataset, tracker = tracker)).filter { it.temperature != null }

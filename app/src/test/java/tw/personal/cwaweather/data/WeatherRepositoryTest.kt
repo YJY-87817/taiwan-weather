@@ -90,8 +90,8 @@ class WeatherRepositoryTest {
         assertEquals(taipei, snapshot.place)
         assertEquals("S1", snapshot.current?.station?.id)
         assertEquals(24.5, snapshot.current?.station?.temperature)
-        assertTrue(snapshot.hourly.isNotEmpty())
-        assertTrue(snapshot.daily.isNotEmpty())
+        assertTrue(snapshot.hourly!!.isNotEmpty())
+        assertTrue(snapshot.daily!!.isNotEmpty())
         assertEquals(emptyList<WeatherAlert>(), snapshot.alerts)
         assertNull(snapshot.offlineSince)
     }
@@ -125,7 +125,7 @@ class WeatherRepositoryTest {
         val snapshot = repository(api).loadForPlace(taipei)
 
         assertNull(snapshot.alerts)
-        assertTrue(snapshot.hourly.isNotEmpty())
+        assertTrue(snapshot.hourly!!.isNotEmpty())
         assertNotNull(snapshot.current)
     }
 
@@ -233,6 +233,76 @@ class WeatherRepositoryTest {
         assertEquals(live.current, saved.current)
     }
 
+    private fun failing(vararg datasets: String, error: () -> Exception = { IOException("down") }) =
+        { call: Call -> if (call.dataset in datasets) throw error() else null }
+
+    @Test
+    fun observationFailureStillShowsTheForecasts() = runBlocking {
+        val snapshot = repository(api(override = failing("O-A0003-001"))).loadForPlace(taipei)
+
+        assertNull(snapshot.current)
+        assertTrue(snapshot.currentUnavailable)
+        assertTrue(snapshot.hourly!!.isNotEmpty())
+        assertTrue(snapshot.daily!!.isNotEmpty())
+    }
+
+    @Test
+    fun threeDayFailureStillShowsTheRest() = runBlocking {
+        val api = api(
+            synoptic = stationsJson("臺北市", "信義區", 25.03, 121.56, id = "NEARBY"),
+            override = failing("F-D0047-061", error = { httpError(500) }),
+        )
+        val snapshot = repository(api).loadForPlace(taipei)
+
+        assertNull(snapshot.hourly)
+        assertTrue(snapshot.daily!!.isNotEmpty())
+        // The town's position is unknown without that response, so the county's station is used.
+        assertEquals("NEARBY", snapshot.current?.station?.id)
+        assertFalse(snapshot.currentUnavailable)
+    }
+
+    @Test
+    fun weeklyFailureStillShowsTheRest() = runBlocking {
+        val snapshot = repository(api(override = failing("F-D0047-063"))).loadForPlace(taipei)
+
+        assertNull(snapshot.daily)
+        assertTrue(snapshot.hourly!!.isNotEmpty())
+        assertNotNull(snapshot.current)
+    }
+
+    @Test
+    fun townMissingFromTheForecastIsEmptyNotAFailure() = runBlocking {
+        val api = api(synoptic = stationsJson("臺北市", "大安區", 25.03, 121.54))
+        val snapshot = repository(api).loadForPlace(Place("臺北市", "大安區"))
+
+        assertEquals(emptyList<HourlyForecast>(), snapshot.hourly)
+        assertEquals(emptyList<DailyForecast>(), snapshot.daily)
+        assertFalse(snapshot.currentUnavailable)
+    }
+
+    @Test
+    fun everySectionFailingIsAnErrorEvenIfAlertsLoad() {
+        val api = api(override = failing("O-A0003-001", "F-D0047-061", "F-D0047-063"))
+        assertThrows(IOException::class.java) { runBlocking { repository(api).loadForPlace(taipei) } }
+    }
+
+    @Test
+    fun rejectedKeyOnOneSectionFailsTheWholeLoad() {
+        val api = api(override = failing("F-D0047-063", error = { httpError(403) }))
+        val error = assertThrows(HttpException::class.java) { runBlocking { repository(api).loadForPlace(taipei) } }
+        assertEquals(403, error.code())
+    }
+
+    @Test
+    fun deviceLocationKeepsItsObservationWhenForecastsFail() = runBlocking {
+        val api = api(override = failing("F-D0047-061", "F-D0047-063"))
+        val snapshot = repository(api).loadAtCoordinates(25.0401, 121.5201)
+
+        assertNotNull(snapshot.current)
+        assertNull(snapshot.hourly)
+        assertNull(snapshot.daily)
+    }
+
     @Test
     fun unreachableServiceWithNothingSavedIsAnError() {
         val api = api(override = { throw IOException("no network") })
@@ -258,7 +328,7 @@ class WeatherRepositoryTest {
         assertEquals(taipei, snapshot.place)
         assertEquals(taipei, snapshot.current?.station?.let { Place(it.county, it.town) })
         assertTrue(checkNotNull(snapshot.current?.distanceKm) < 1.0)
-        assertTrue(snapshot.hourly.isNotEmpty())
+        assertTrue(snapshot.hourly!!.isNotEmpty())
     }
 
     @Test
