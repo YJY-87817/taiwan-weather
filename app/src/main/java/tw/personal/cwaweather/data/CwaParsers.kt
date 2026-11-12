@@ -2,7 +2,6 @@ package tw.personal.cwaweather.data
 
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
-import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -31,11 +30,10 @@ private fun parseTime(value: String?): OffsetDateTime? =
     value?.let { runCatching { OffsetDateTime.parse(it) }.getOrNull() }
 
 private val alertTimeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-private val taiwanOffset = ZoneOffset.ofHours(8)
 
 /** Alert times have no offset in the response and are Taiwan local time. */
 private fun parseAlertTime(value: String?): OffsetDateTime? = value?.let {
-    runCatching { LocalDateTime.parse(it, alertTimeFormat).atOffset(taiwanOffset) }.getOrNull()
+    runCatching { LocalDateTime.parse(it, alertTimeFormat).atOffset(TAIWAN_OFFSET) }.getOrNull()
 }
 
 /** Accepts either a JSON array or a single object under the key. */
@@ -116,6 +114,7 @@ fun parseStations(root: JsonObject): List<Station> =
             dailyHigh = extreme.obj("DailyHigh").obj("TemperatureInfo").number("AirTemperature"),
             dailyLow = extreme.obj("DailyLow").obj("TemperatureInfo").number("AirTemperature"),
             altitude = geo.number("StationAltitude"),
+            precipitationTrace = element.obj("Now").text("Precipitation")?.trim().equals("T", ignoreCase = true),
         )
     }
 
@@ -180,8 +179,8 @@ fun parseDaily(root: JsonObject, town: String, now: OffsetDateTime): List<DailyF
     val rain = elementPoints(location, "12小時降雨機率")
 
     // Dates are Taiwan calendar days whatever the phone's time zone is.
-    fun ForecastPoint.taiwanDate() = start.withOffsetSameInstant(taiwanOffset).toLocalDate()
-    val today = now.withOffsetSameInstant(taiwanOffset).toLocalDate()
+    fun ForecastPoint.taiwanDate() = start.withOffsetSameInstant(TAIWAN_OFFSET).toLocalDate()
+    val today = now.withOffsetSameInstant(TAIWAN_OFFSET).toLocalDate()
     val dates = (highs + lows + weather).map { it.taiwanDate() }.distinct().sorted()
         .filterNot { it.isBefore(today) }
 
@@ -189,7 +188,7 @@ fun parseDaily(root: JsonObject, town: String, now: OffsetDateTime): List<DailyF
         fun onDate(points: List<ForecastPoint>) = points.filter { it.taiwanDate() == date }
         // Prefer the daytime period's description so each row reads as that day's weather.
         val dayWeather = onDate(weather).let { periods ->
-            periods.firstOrNull { it.start.hour in 6..11 } ?: periods.firstOrNull()
+            periods.firstOrNull { it.start.inTaiwan().hour in 6..11 } ?: periods.firstOrNull()
         }
         DailyForecast(
             date = date,

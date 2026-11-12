@@ -42,6 +42,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -49,7 +53,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -59,7 +62,9 @@ import tw.personal.cwaweather.data.CurrentWeather
 import tw.personal.cwaweather.data.DailyForecast
 import tw.personal.cwaweather.data.HourlyForecast
 import tw.personal.cwaweather.data.Place
+import tw.personal.cwaweather.data.TAIWAN_OFFSET
 import tw.personal.cwaweather.data.WeatherAlert
+import tw.personal.cwaweather.data.inTaiwan
 
 private val observedFormat = DateTimeFormatter.ofPattern("M/d HH:mm")
 private val hourFormat = DateTimeFormatter.ofPattern("HH:mm")
@@ -93,8 +98,14 @@ fun WeatherScreen(
                 },
                 actions = {
                     state.place?.let { place ->
-                        TextButton(onClick = { onToggleFavorite(place) }) {
-                            Text(if (place in state.favorites) "★" else "☆")
+                        val favorite = place in state.favorites
+                        TextButton(
+                            onClick = { onToggleFavorite(place) },
+                            modifier = Modifier.semantics {
+                                contentDescription = if (favorite) "從收藏移除" else "加入收藏"
+                            },
+                        ) {
+                            Text(if (favorite) "★" else "☆")
                         }
                     }
                     TextButton(onClick = { onShowPicker(true) }) { Text("地點") }
@@ -125,7 +136,7 @@ fun WeatherScreen(
             }
             snapshot?.offlineSince?.let { savedAt ->
                 item {
-                    val time = Instant.ofEpochMilli(savedAt).atZone(ZoneId.systemDefault())
+                    val time = Instant.ofEpochMilli(savedAt).atOffset(TAIWAN_OFFSET)
                     Text(
                         "無法連線，顯示 ${time.format(observedFormat)} 儲存的資料",
                         color = MaterialTheme.colorScheme.error,
@@ -274,7 +285,7 @@ private fun PlaceChips(
             FilterChip(
                 selected = !state.usesDeviceLocation && state.place == place,
                 onClick = { onSelectPlace(place) },
-                label = { Text(place.town) },
+                label = { Text(favoriteLabel(place, state.favorites)) },
             )
         }
     }
@@ -350,15 +361,15 @@ private fun CurrentCard(current: CurrentWeather, place: Place) {
                 Text("今日最高 ${station.dailyHigh.oneDecimal()}° / 最低 ${station.dailyLow.oneDecimal()}°")
             }
             Text("濕度 ${station.humidity?.roundToInt()?.let { "$it%" } ?: "—"}　氣壓 ${station.pressure.oneDecimal()} hPa")
-            Text("風速 ${station.windSpeed.oneDecimal()} m/s　風向 ${windDirection(station.windDirection)}")
-            Text("本日雨量 ${station.precipitation.oneDecimal()} mm" + (station.uvIndex?.let { "　紫外線 ${it.roundToInt()}" } ?: ""))
+            Text("風速 ${station.windSpeed.oneDecimal()} m/s　風向 ${windDirectionText(station.windSpeed, station.windDirection)}")
+            Text("本日雨量 ${rainText(station)}" + (station.uvIndex?.let { "　紫外線 ${it.roundToInt()}" } ?: ""))
             // A station outside the town says where it is, so its readings are not taken for the town's own.
             val elsewhere = station.county != place.county || station.town != place.town
             val where = "（${station.county}${station.town}）".takeIf { elsewhere && it.length > 2 }.orEmpty()
             val distance = current.distanceKm?.let { "，距離約 ${"%.1f".format(it)} 公里" }.orEmpty()
             val altitude = station.altitude?.takeIf { elsewhere }?.let { "，海拔 ${it.roundToInt()} 公尺" }.orEmpty()
             Text(
-                "${station.name}測站$where$distance$altitude\n觀測時間 ${station.observedAt?.format(observedFormat) ?: "—"}",
+                "${station.name}測站$where$distance$altitude\n觀測時間 ${station.observedAt?.inTaiwan()?.format(observedFormat) ?: "—"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -370,7 +381,7 @@ private fun CurrentCard(current: CurrentWeather, place: Place) {
 private fun HourlySection(hourly: List<HourlyForecast>) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("未來 3 天", style = MaterialTheme.typography.titleMedium)
-        TemperatureChart(hourly.map { it.temperature })
+        TemperatureChart(hourly)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(hourly) { item ->
                 Card {
@@ -378,8 +389,9 @@ private fun HourlySection(hourly: List<HourlyForecast>) {
                         Modifier.width(96.dp).padding(8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text(item.time.format(hourDateFormat), style = MaterialTheme.typography.bodySmall)
-                        Text(item.time.format(hourFormat), style = MaterialTheme.typography.bodyMedium)
+                        val time = item.time.inTaiwan()
+                        Text(time.format(hourDateFormat), style = MaterialTheme.typography.bodySmall)
+                        Text(time.format(hourFormat), style = MaterialTheme.typography.bodyMedium)
                         Text("${item.temperature.roundToInt()}°", style = MaterialTheme.typography.titleLarge)
                         Text(item.weather ?: "—", style = MaterialTheme.typography.bodySmall, maxLines = 2)
                         Text("降雨 ${item.rainChance?.let { "$it%" } ?: "—"}", style = MaterialTheme.typography.bodySmall)
@@ -391,26 +403,44 @@ private fun HourlySection(hourly: List<HourlyForecast>) {
 }
 
 @Composable
-private fun TemperatureChart(temperatures: List<Double>) {
-    if (temperatures.size < 2) return
+private fun TemperatureChart(hourly: List<HourlyForecast>) {
+    if (hourly.size < 2) return
     val color = MaterialTheme.colorScheme.primary
-    val min = temperatures.min()
-    val max = temperatures.max()
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val labelStyle = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val measurer = rememberTextMeasurer()
+    val scale = remember(hourly) { ChartScale(hourly.map { it.time }) }
+    val min = hourly.minOf { it.temperature }
+    val max = hourly.maxOf { it.temperature }
     Text(
         "氣溫趨勢 ${min.roundToInt()}° ～ ${max.roundToInt()}°",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    Canvas(Modifier.fillMaxWidth().height(72.dp)) {
+    val description = "氣溫趨勢圖，最低 ${min.roundToInt()} 度，最高 ${max.roundToInt()} 度"
+    Canvas(Modifier.fillMaxWidth().height(88.dp).semantics { contentDescription = description }) {
         val range = (max - min).coerceAtLeast(1.0)
-        val stepX = size.width / (temperatures.size - 1)
-        fun point(index: Int) = Offset(
-            x = index * stepX,
-            y = (size.height * (1 - (temperatures[index] - min) / range)).toFloat(),
+        // The bottom strip holds the date labels; the line keeps clear of the plot's edges.
+        val labelHeight = 16.dp.toPx()
+        val inset = 2.dp.toPx()
+        val plotHeight = size.height - labelHeight
+        fun point(item: HourlyForecast) = Offset(
+            x = scale.fraction(item.time) * size.width,
+            y = inset + ((plotHeight - 2 * inset) * (1 - (item.temperature - min) / range)).toFloat(),
         )
+        // Forecast steps are uneven, so each day is marked where it really begins.
+        scale.dayStarts.forEach { day ->
+            val x = scale.fraction(day) * size.width
+            drawLine(gridColor, Offset(x, 0f), Offset(x, plotHeight), strokeWidth = 1.dp.toPx())
+            val label = measurer.measure(day.format(hourDateFormat), labelStyle)
+            val labelX = x + 4.dp.toPx()
+            if (labelX + label.size.width <= size.width) {
+                drawText(label, topLeft = Offset(labelX, plotHeight + (labelHeight - label.size.height) / 2))
+            }
+        }
         val path = Path().apply {
-            moveTo(point(0).x, point(0).y)
-            for (index in 1 until temperatures.size) lineTo(point(index).x, point(index).y)
+            moveTo(point(hourly.first()).x, point(hourly.first()).y)
+            hourly.drop(1).forEach { lineTo(point(it).x, point(it).y) }
         }
         drawPath(path, color, style = Stroke(width = 2.dp.toPx()))
     }
@@ -501,9 +531,3 @@ private fun PickerRow(label: String, onClick: () -> Unit) {
 }
 
 private fun Double?.oneDecimal(): String = this?.let { "%.1f".format(it) } ?: "—"
-
-private fun windDirection(degrees: Double?): String {
-    if (degrees == null) return "—"
-    val names = listOf("北", "東北", "東", "東南", "南", "西南", "西", "西北")
-    return names[((degrees / 45).roundToInt() % 8 + 8) % 8]
-}

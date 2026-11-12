@@ -35,6 +35,23 @@ class CwaParsersTest {
     }
 
     @Test
+    fun traceRainIsReadAsATraceNotAnAmount() {
+        fun stations(rain: String) = Json.parseToJsonElement(
+            """{"records":{"Station":[{"StationId":"S","StationName":"測站","GeoInfo":{"Coordinates":[
+               {"CoordinateName":"WGS84","StationLatitude":"25.0","StationLongitude":"121.5"}]},
+               "WeatherElement":{"AirTemperature":"24.5","Now":{"Precipitation":"$rain"}}}]}}""",
+        ).jsonObject
+
+        val trace = parseStations(stations("T")).single()
+        assertTrue(trace.precipitationTrace)
+        assertNull(trace.precipitation)
+
+        val measured = parseStations(stations("1.5")).single()
+        assertEquals(false, measured.precipitationTrace)
+        assertEquals(1.5, measured.precipitation!!, 0.0)
+    }
+
+    @Test
     fun townPositionComesFromTheForecast() {
         val position = parseTownCoordinates(fixture("hourly.json"), "中正區")
         assertEquals(25.046058, position!!.latitude, 1e-6)
