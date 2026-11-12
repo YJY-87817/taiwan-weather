@@ -134,9 +134,24 @@ fun WeatherScreen(
             }
             if (snapshot != null) {
                 item { AlertsSection(snapshot.alerts) }
-                snapshot.current?.let { current -> item { CurrentCard(current, snapshot.place) } }
-                if (snapshot.hourly.isNotEmpty()) item { HourlySection(snapshot.hourly) }
-                if (snapshot.daily.isNotEmpty()) item { DailySection(snapshot.daily) }
+                val current = snapshot.current
+                val hourly = snapshot.hourly
+                val daily = snapshot.daily
+                when {
+                    current != null -> item { CurrentCard(current, snapshot.place) }
+                    snapshot.currentUnavailable -> item { SectionNotice("即時觀測資料暫時無法取得。", failed = true) }
+                    else -> item { SectionNotice("附近沒有可用的測站觀測資料。") }
+                }
+                when {
+                    hourly == null -> item { SectionNotice("未來 3 天預報暫時無法取得。", failed = true) }
+                    hourly.isEmpty() -> item { SectionNotice("這個地點目前沒有未來 3 天的預報資料。") }
+                    else -> item { HourlySection(hourly) }
+                }
+                when {
+                    daily == null -> item { SectionNotice("未來 1 週預報暫時無法取得。", failed = true) }
+                    daily.isEmpty() -> item { SectionNotice("這個地點目前沒有未來 1 週的預報資料。") }
+                    else -> item { DailySection(daily) }
+                }
             }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -263,6 +278,16 @@ private fun PlaceChips(
             )
         }
     }
+}
+
+/** Stands in for a section that has nothing to show, so a missing section is never just a gap. */
+@Composable
+private fun SectionNotice(text: String, failed: Boolean = false) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

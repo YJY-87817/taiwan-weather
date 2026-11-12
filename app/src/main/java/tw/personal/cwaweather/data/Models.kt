@@ -54,13 +54,17 @@ data class WeatherAlert(
 
 data class WeatherSnapshot(
     val place: Place,
+    /** Null means no station could be found, or with [currentUnavailable] that the data could not be read. */
     val current: CurrentWeather?,
-    val hourly: List<HourlyForecast>,
-    val daily: List<DailyForecast>,
+    /** Null means the forecast could not be read; empty means CWA has none for this place. */
+    val hourly: List<HourlyForecast>?,
+    /** Null means the forecast could not be read; empty means CWA has none for this place. */
+    val daily: List<DailyForecast>?,
     /** Null means the alert data could not be read, which is different from having no alerts. */
     val alerts: List<WeatherAlert>?,
     /** Epoch millis of the oldest cached response used, or null when everything is live. */
     val offlineSince: Long?,
+    val currentUnavailable: Boolean = false,
 )
 
 /** County-to-dataset IDs from the CWA API documentation. A county's weekly ID is its 3-day ID + 2. */
