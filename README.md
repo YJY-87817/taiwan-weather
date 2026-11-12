@@ -24,10 +24,18 @@
 
 ## 從原始碼建置
 
-需要 Android Studio（使用內附的 JDK）和 Android SDK Platform 37。可以直接用 Android Studio 開啟專案，或在指令列建置：
+需要 JDK 17 以上和 Android SDK Platform 37。安裝 Android Studio 就兩者都有（JDK 在安裝目錄的 `jbr`），可以直接用它開啟專案，或在指令列建置。
+
+Windows：
 
 ```bash
 JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew.bat assembleDebug
+```
+
+macOS 和 Linux（`java` 已是 17 以上時不必設定 `JAVA_HOME`）：
+
+```bash
+./gradlew assembleDebug
 ```
 
 APK 會產生在 `app/build/outputs/apk/debug/app-debug.apk`。
@@ -38,11 +46,15 @@ APK 會產生在 `app/build/outputs/apk/debug/app-debug.apk`。
 sdk.dir=C\:\\Users\\<使用者名稱>\\AppData\\Local\\Android\\Sdk
 ```
 
-執行單元測試：
+macOS 的預設位置是 `~/Library/Android/sdk`，Linux 是 `~/Android/Sdk`。
+
+執行單元測試和 lint（macOS 和 Linux 把 `./gradlew.bat` 換成 `./gradlew`）：
 
 ```bash
-JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew.bat testDebugUnitTest
+JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew.bat testDebugUnitTest lintDebug
 ```
+
+每次推送和 PR 都會在 GitHub Actions 跑同樣的檢查，報告可以在該次執行的 Artifacts 下載。
 
 ## 使用的資料集
 

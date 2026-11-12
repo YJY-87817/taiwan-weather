@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch makes the run for the older one pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -34,11 +39,13 @@ jobs:
       - name: Build debug APK
         run: sh ./gradlew assembleDebug --console=plain
 
-      - name: Upload test reports
-        if: failure()
+      # Kept for passing runs too, so lint warnings can be read without failing the build.
+      - name: Upload test and lint reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports
+          name: reports
+          if-no-files-found: ignore
           path: |
             app/build/reports/tests/
             app/build/reports/lint-results-debug.html
