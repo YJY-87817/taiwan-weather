@@ -12,23 +12,20 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import tw.personal.cwaweather.ui.WeatherScreen
 
 class MainActivity : ComponentActivity() {
     private val viewModel: WeatherViewModel by viewModels { WeatherViewModel.Factory }
-    private var showPicker by mutableStateOf(false)
-
     private val locationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
                 viewModel.loadDeviceLocation()
             } else {
-                showPicker = true
+                viewModel.setShowPicker(true)
             }
         }
 
@@ -36,25 +33,24 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        if (viewModel.claimStart()) start()
-
         setContent {
             val colors = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
             MaterialTheme(colorScheme = colors) {
                 val state by viewModel.uiState.collectAsStateWithLifecycle()
+                // Runs for a new ViewModel and after a key is saved, but not for a recreated activity.
+                LaunchedEffect(state.startPending) {
+                    if (viewModel.claimStart()) start()
+                }
                 WeatherScreen(
                     state = state,
-                    showPicker = showPicker,
-                    onShowPicker = { showPicker = it },
+                    onShowPicker = viewModel::setShowPicker,
                     onRefresh = viewModel::refresh,
                     onUseDeviceLocation = ::requestDeviceLocation,
                     onSelectPlace = viewModel::selectPlace,
                     onToggleFavorite = viewModel::toggleFavorite,
-                    hasApiKey = viewModel.hasApiKey(),
                     onAskForKey = viewModel::setAskForKey,
-                    onSaveApiKey = { key ->
-                        viewModel.saveApiKey(key).also { error -> if (error == null) start() }
-                    },
+                    onSaveApiKey = viewModel::saveApiKey,
+                    onKeyEdited = viewModel::clearKeyError,
                     loadTowns = viewModel::towns,
                 )
             }

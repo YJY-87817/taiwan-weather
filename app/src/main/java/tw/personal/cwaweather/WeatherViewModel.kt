@@ -11,6 +11,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
@@ -33,6 +34,12 @@ data class WeatherUiState(
     val favorites: List<Place> = emptyList(),
     val message: String? = null,
     val askForKey: Boolean = false,
+    val hasApiKey: Boolean = false,
+    val verifyingKey: Boolean = false,
+    val keyError: String? = null,
+    val showPicker: Boolean = false,
+    /** The activity owes a first load: on a new ViewModel, and again after a newly saved key. */
+    val startPending: Boolean = true,
 )
 
 class WeatherViewModel(
@@ -41,41 +48,75 @@ class WeatherViewModel(
     private val places: PlaceStore,
     private val locationProvider: LocationProvider,
 ) : ViewModel() {
-    private val state = MutableStateFlow(WeatherUiState(favorites = places.favorites))
+    private val state = MutableStateFlow(
+        WeatherUiState(favorites = places.favorites, hasApiKey = credentials.apiKey.isNotBlank()),
+    )
     private var loadJob: Job? = null
-    private var started = false
+
+    /** What the screen showed after the last load that worked, to go back to when a later one fails. */
+    private var lastLoaded: WeatherUiState? = null
 
     val uiState: StateFlow<WeatherUiState> = state
 
     /**
-     * True only the first time it is called on this ViewModel. A recreated activity keeps the
-     * ViewModel and must not reload, but a new process (after the system killed the old one)
-     * gets a new ViewModel and still needs its first load.
+     * True the first time it is called on this ViewModel, and again after each newly saved key.
+     * A recreated activity keeps the ViewModel and must not reload, but a new process (after the
+     * system killed the old one) gets a new ViewModel and still needs its first load.
      */
-    fun claimStart(): Boolean = !started.also { started = true }
+    fun claimStart(): Boolean = state.getAndUpdate { it.copy(startPending = false) }.startPending
 
     fun hasApiKey(): Boolean = credentials.apiKey.isNotBlank()
 
-    fun setAskForKey(ask: Boolean) = state.update { it.copy(askForKey = ask) }
+    fun setAskForKey(ask: Boolean) = state.update { it.copy(askForKey = ask, keyError = null) }
 
-    /** Saves the key only after CWA accepts it. Returns an error message, or null on success. */
-    suspend fun saveApiKey(candidate: String): String? {
-        try {
-            repository.verifyKey(candidate)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: HttpException) {
-            return if (e.code() == 401 || e.code() == 403) {
-                "氣象署不接受這組授權碼，請確認後再輸入。"
-            } else {
-                "氣象署服務回應錯誤（HTTP ${e.code()}），請稍後再試。"
+    fun clearKeyError() = state.update { it.copy(keyError = null) }
+
+    fun setShowPicker(show: Boolean) = state.update { it.copy(showPicker = show) }
+
+    /**
+     * Saves the key only after CWA accepts it. The check outlives a recreated activity, and its
+     * outcome is reported through [WeatherUiState.verifyingKey] and [WeatherUiState.keyError].
+     * A saved key sets [WeatherUiState.startPending] so the activity loads with it.
+     */
+    fun saveApiKey(candidate: String) {
+        if (state.value.verifyingKey) return
+        state.update { it.copy(verifyingKey = true, keyError = null) }
+        viewModelScope.launch {
+            val error = verifyKey(candidate)
+            if (error != null) {
+                state.update { it.copy(verifyingKey = false, keyError = error) }
+                return@launch
             }
-        } catch (e: IOException) {
-            return "無法連線到氣象署，暫時無法確認授權碼，請確認網路後再試。"
+            credentials.apiKey = candidate
+            state.update {
+                it.copy(
+                    verifyingKey = false,
+                    askForKey = false,
+                    hasApiKey = true,
+                    message = null,
+                    startPending = true,
+                )
+            }
         }
-        credentials.apiKey = candidate
-        state.update { it.copy(askForKey = false, message = null) }
-        return null
+    }
+
+    /** Returns an error message, or null when CWA accepts the key. */
+    private suspend fun verifyKey(candidate: String): String? = try {
+        repository.verifyKey(candidate)
+        null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: HttpException) {
+        if (e.code() == 401 || e.code() == 403) {
+            "氣象署不接受這組授權碼，請確認後再輸入。"
+        } else {
+            "氣象署服務回應錯誤（HTTP ${e.code()}），請稍後再試。"
+        }
+    } catch (e: IOException) {
+        "無法連線到氣象署，暫時無法確認授權碼，請確認網路後再試。"
+    } catch (e: Exception) {
+        // For example a reply that is not the expected JSON. It must not crash the app.
+        "氣象署回應的內容無法讀取（${e.javaClass.simpleName}），請稍後再試。"
     }
 
     fun savedPlace(): Place? = places.selected
@@ -141,9 +182,22 @@ class WeatherViewModel(
             try {
                 val snapshot = load()
                 state.update { it.copy(loading = false, place = snapshot.place, snapshot = snapshot) }
+                lastLoaded = state.value
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // Go back to what was on screen, so the title, the selected chip and what "refresh"
+                // reloads all agree with the data shown. With nothing loaded yet, the attempted
+                // place stays so that it can be retried.
+                lastLoaded?.let { loaded ->
+                    state.update {
+                        it.copy(
+                            place = loaded.place,
+                            usesDeviceLocation = loaded.usesDeviceLocation,
+                            snapshot = loaded.snapshot,
+                        )
+                    }
+                }
                 showMessage(describe(e))
                 if (e is HttpException && (e.code() == 401 || e.code() == 403)) setAskForKey(true)
             }

@@ -34,7 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +53,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
-import kotlinx.coroutines.launch
 import tw.personal.cwaweather.WeatherUiState
 import tw.personal.cwaweather.data.Counties
 import tw.personal.cwaweather.data.CurrentWeather
@@ -71,15 +70,14 @@ private val dayFormat = DateTimeFormatter.ofPattern("M/d (E)", Locale.TRADITIONA
 @Composable
 fun WeatherScreen(
     state: WeatherUiState,
-    showPicker: Boolean,
     onShowPicker: (Boolean) -> Unit,
     onRefresh: () -> Unit,
     onUseDeviceLocation: () -> Unit,
     onSelectPlace: (Place) -> Unit,
     onToggleFavorite: (Place) -> Unit,
-    hasApiKey: Boolean,
     onAskForKey: (Boolean) -> Unit,
-    onSaveApiKey: suspend (String) -> String?,
+    onSaveApiKey: (String) -> Unit,
+    onKeyEdited: () -> Unit,
     loadTowns: suspend (String) -> Result<List<String>>,
 ) {
     val snapshot = state.snapshot
@@ -156,13 +154,16 @@ fun WeatherScreen(
 
     if (state.askForKey) {
         ApiKeyDialog(
-            hasApiKey = hasApiKey,
+            hasApiKey = state.hasApiKey,
+            verifying = state.verifyingKey,
+            error = state.keyError,
             onSave = onSaveApiKey,
+            onEdited = onKeyEdited,
             onDismiss = { onAskForKey(false) },
         )
     }
 
-    if (showPicker) {
+    if (state.showPicker) {
         PlacePicker(
             loadTowns = loadTowns,
             onDismiss = { onShowPicker(false) },
@@ -181,14 +182,15 @@ fun WeatherScreen(
 @Composable
 private fun ApiKeyDialog(
     hasApiKey: Boolean,
-    onSave: suspend (String) -> String?,
+    verifying: Boolean,
+    error: String?,
+    onSave: (String) -> Unit,
+    onEdited: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var text by remember { mutableStateOf("") }
-    var revealed by remember { mutableStateOf(false) }
-    var verifying by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
+    // Saveable so a rotated screen keeps what was typed.
+    var text by rememberSaveable { mutableStateOf("") }
+    var revealed by rememberSaveable { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
 
     AlertDialog(
@@ -207,7 +209,7 @@ private fun ApiKeyDialog(
                     value = text,
                     onValueChange = {
                         text = it
-                        error = null
+                        if (error != null) onEdited()
                     },
                     label = { Text("授權碼") },
                     singleLine = true,
@@ -230,13 +232,7 @@ private fun ApiKeyDialog(
         confirmButton = {
             TextButton(
                 enabled = text.isNotBlank() && !verifying,
-                onClick = {
-                    verifying = true
-                    scope.launch {
-                        error = onSave(text.trim())
-                        verifying = false
-                    }
-                },
+                onClick = { onSave(text.trim()) },
             ) { Text("驗證並儲存") }
         },
         dismissButton = {
@@ -428,7 +424,7 @@ private fun PlacePicker(
     onUseDeviceLocation: () -> Unit,
     onSelect: (Place) -> Unit,
 ) {
-    var county by remember { mutableStateOf<String?>(null) }
+    var county by rememberSaveable { mutableStateOf<String?>(null) }
     var towns by remember { mutableStateOf<List<String>?>(null) }
     var failed by remember { mutableStateOf(false) }
 
