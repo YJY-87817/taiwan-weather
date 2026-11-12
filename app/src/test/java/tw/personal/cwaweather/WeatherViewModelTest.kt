@@ -261,40 +261,177 @@ class WeatherViewModelTest {
     }
 
     @Test
-    fun acceptedKeyIsSavedAndClosesThePrompt() = runBlocking {
+    fun acceptedKeyIsSavedAndClosesThePrompt() {
         val viewModel = viewModel()
+        assertFalse(viewModel.uiState.value.hasApiKey)
         viewModel.setAskForKey(true)
 
-        assertNull(viewModel.saveApiKey("KEY"))
+        viewModel.saveApiKey("KEY")
+        val state = viewModel.uiState.value
         assertEquals("KEY", credentials.apiKey)
-        assertFalse(viewModel.uiState.value.askForKey)
+        assertFalse(state.askForKey)
+        assertFalse(state.verifyingKey)
+        assertNull(state.keyError)
+        assertTrue(state.hasApiKey)
     }
 
     @Test
-    fun rejectedKeyIsNotSaved() = runBlocking {
+    fun savedKeyAsksForAnotherStart() {
+        val viewModel = viewModel()
+        assertTrue(viewModel.claimStart())
+
+        viewModel.saveApiKey("KEY")
+        assertTrue(viewModel.uiState.value.startPending)
+        assertTrue(viewModel.claimStart())
+        assertFalse(viewModel.claimStart())
+    }
+
+    @Test
+    fun rejectedKeyIsNotSaved() {
         source.verify = { throw httpError(403) }
         val viewModel = viewModel()
+        assertTrue(viewModel.claimStart())
         viewModel.setAskForKey(true)
 
-        assertTrue(viewModel.saveApiKey("BAD")!!.contains("授權碼"))
+        viewModel.saveApiKey("BAD")
+        val state = viewModel.uiState.value
+        assertTrue(state.keyError!!.contains("授權碼"))
         assertEquals("", credentials.apiKey)
-        assertTrue(viewModel.uiState.value.askForKey)
+        assertTrue(state.askForKey)
+        assertFalse(state.verifyingKey)
+        assertFalse(state.hasApiKey)
+        assertFalse(state.startPending)
     }
 
     @Test
-    fun serverErrorWhileCheckingTheKeyIsReportedAndNotSaved() = runBlocking {
+    fun serverErrorWhileCheckingTheKeyIsReportedAndNotSaved() {
         source.verify = { throw httpError(503) }
         val viewModel = viewModel()
-        assertTrue(viewModel.saveApiKey("KEY")!!.contains("503"))
+        viewModel.saveApiKey("KEY")
+        assertTrue(viewModel.uiState.value.keyError!!.contains("503"))
         assertEquals("", credentials.apiKey)
     }
 
     @Test
-    fun noConnectionWhileCheckingTheKeyIsReportedAndNotSaved() = runBlocking {
+    fun noConnectionWhileCheckingTheKeyIsReportedAndNotSaved() {
         source.verify = { throw IOException("offline") }
         val viewModel = viewModel()
-        assertTrue(viewModel.saveApiKey("KEY")!!.contains("無法連線"))
+        viewModel.saveApiKey("KEY")
+        assertTrue(viewModel.uiState.value.keyError!!.contains("無法連線"))
         assertEquals("", credentials.apiKey)
+    }
+
+    @Test
+    fun unreadableReplyWhileCheckingTheKeyIsReportedInsteadOfCrashing() {
+        source.verify = { throw IllegalStateException("not JSON") }
+        val viewModel = viewModel()
+        viewModel.saveApiKey("KEY")
+
+        val state = viewModel.uiState.value
+        assertTrue(state.keyError!!.contains("無法讀取"))
+        assertFalse(state.verifyingKey)
+        assertEquals("", credentials.apiKey)
+    }
+
+    @Test
+    fun keyCheckIsShownWhileItRunsAndIsNotStartedTwice() {
+        val gate = CompletableDeferred<Unit>()
+        val candidates = mutableListOf<String>()
+        source.verify = { candidates += it; gate.await() }
+        val viewModel = viewModel()
+
+        viewModel.saveApiKey("FIRST")
+        assertTrue(viewModel.uiState.value.verifyingKey)
+        viewModel.saveApiKey("SECOND")
+        gate.complete(Unit)
+
+        assertEquals(listOf("FIRST"), candidates)
+        assertEquals("FIRST", credentials.apiKey)
+        assertFalse(viewModel.uiState.value.verifyingKey)
+    }
+
+    @Test
+    fun keyErrorIsClearedByEditingOrClosingThePrompt() {
+        source.verify = { throw httpError(403) }
+        val viewModel = viewModel()
+
+        viewModel.saveApiKey("BAD")
+        viewModel.clearKeyError()
+        assertNull(viewModel.uiState.value.keyError)
+
+        viewModel.saveApiKey("BAD")
+        viewModel.setAskForKey(false)
+        assertNull(viewModel.uiState.value.keyError)
+    }
+
+    @Test
+    fun placePickerVisibilityIsPartOfTheState() {
+        val viewModel = viewModel()
+        assertFalse(viewModel.uiState.value.showPicker)
+        viewModel.setShowPicker(true)
+        assertTrue(viewModel.uiState.value.showPicker)
+        viewModel.setShowPicker(false)
+        assertFalse(viewModel.uiState.value.showPicker)
+    }
+
+    @Test
+    fun failedDeviceLocationGoesBackToThePlaceOnScreen() {
+        source.forPlace = { snapshot(it) }
+        val viewModel = viewModel()
+        viewModel.selectPlace(taipei)
+        location = { throw LocationUnavailableException() }
+        viewModel.loadDeviceLocation()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.usesDeviceLocation)
+        assertEquals(taipei, state.place)
+        assertEquals(taipei, state.snapshot?.place)
+        assertTrue(state.message!!.contains("定位"))
+
+        viewModel.refresh()
+        assertEquals(listOf(taipei, taipei), source.placeLoads)
+        assertTrue(source.coordinateLoads.isEmpty())
+    }
+
+    @Test
+    fun failedPlaceGoesBackToThePlaceOnScreen() {
+        source.forPlace = { place -> if (place == taipei) snapshot(place) else throw IOException("down") }
+        val viewModel = viewModel()
+        viewModel.selectPlace(taipei)
+        viewModel.selectPlace(kaohsiung)
+
+        val state = viewModel.uiState.value
+        assertEquals(taipei, state.place)
+        assertEquals(taipei, state.snapshot?.place)
+        assertFalse(state.loading)
+        assertNotNull(state.message)
+    }
+
+    @Test
+    fun failedPlaceAfterDeviceLocationGoesBackToDeviceLocation() {
+        source.atCoordinates = { _, _ -> snapshot(taipei) }
+        source.forPlace = { throw IOException("down") }
+        val viewModel = viewModel()
+        viewModel.loadDeviceLocation()
+        viewModel.selectPlace(kaohsiung)
+
+        val state = viewModel.uiState.value
+        assertTrue(state.usesDeviceLocation)
+        assertEquals(taipei, state.place)
+        assertEquals(taipei, state.snapshot?.place)
+    }
+
+    @Test
+    fun failedFirstLoadKeepsThePlaceSoItCanBeRetried() {
+        source.forPlace = { throw IOException("down") }
+        val viewModel = viewModel()
+        viewModel.selectPlace(taipei)
+        assertEquals(taipei, viewModel.uiState.value.place)
+
+        source.forPlace = { snapshot(it) }
+        viewModel.refresh()
+        assertEquals(taipei, viewModel.uiState.value.snapshot?.place)
+        assertNull(viewModel.uiState.value.message)
     }
 
     @Test
