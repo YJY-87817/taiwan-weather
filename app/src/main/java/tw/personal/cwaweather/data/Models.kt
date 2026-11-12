@@ -23,8 +23,11 @@ data class Station(
     val precipitation: Double?,
     val dailyHigh: Double?,
     val dailyLow: Double?,
+    /** Metres above sea level. */
+    val altitude: Double? = null,
 )
 
+/** [distanceKm] is from the device or the town's centre to the station, when that is known. */
 data class CurrentWeather(val station: Station, val distanceKm: Double?)
 
 data class HourlyForecast(

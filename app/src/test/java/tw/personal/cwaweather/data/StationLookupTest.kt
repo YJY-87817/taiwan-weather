@@ -22,6 +22,14 @@ class StationLookupTest {
     private val kaohsiung = station("C", "高雄市", "左營區", 22.6273, 120.3014)
 
     @Test
+    fun nearestStationComesWithItsDistance() {
+        val (station, distance) = nearestStation(Coordinates(25.03, 121.56), listOf(kaohsiung, taipeiStation, xinyi))!!
+        assertSame(xinyi, station)
+        assertTrue(distance < 1.0)
+        assertNull(nearestStation(Coordinates(25.03, 121.56), emptyList()))
+    }
+
+    @Test
     fun distanceBetweenIdenticalPointsIsZero() {
         assertEquals(0.0, distanceKm(25.0, 121.5, 25.0, 121.5), 1e-9)
     }

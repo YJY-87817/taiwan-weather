@@ -55,10 +55,20 @@ fun parseAlerts(
 ): List<WeatherAlert> {
     val records = details.obj("records").list("record")
 
-    fun detailFor(phenomena: String): String? = records.firstOrNull { record ->
-        record.obj("hazardConditions").obj("hazards").list("hazard")
-            .any { it.obj("info").text("phenomena") == phenomena }
-    }?.obj("contents")?.obj("content")?.text("contentText")?.trim()
+    fun JsonElement.hazards(phenomena: String) = obj("hazardConditions").obj("hazards").list("hazard")
+        .map { it.obj("info") }
+        .filter { it.text("phenomena") == phenomena }
+
+    fun JsonElement?.names(county: String) =
+        obj("affectedAreas").list("location").any { it.text("locationName") == county }
+
+    // Two bulletins can cover the same phenomenon, so the one naming this county wins. Areas are not
+    // always counties (for example 恆春半島), so a bulletin for the phenomenon is still better than none.
+    fun detailFor(phenomena: String): String? {
+        val record = records.firstOrNull { record -> record.hazards(phenomena).any { it.names(county) } }
+            ?: records.firstOrNull { record -> record.hazards(phenomena).isNotEmpty() }
+        return record?.obj("contents")?.obj("content")?.text("contentText")?.trim()
+    }
 
     return byCounty.obj("records").list("location")
         .firstOrNull { it.text("locationName") == county }
@@ -105,6 +115,7 @@ fun parseStations(root: JsonObject): List<Station> =
             precipitation = element.obj("Now").number("Precipitation"),
             dailyHigh = extreme.obj("DailyHigh").obj("TemperatureInfo").number("AirTemperature"),
             dailyLow = extreme.obj("DailyLow").obj("TemperatureInfo").number("AirTemperature"),
+            altitude = geo.number("StationAltitude"),
         )
     }
 
@@ -119,6 +130,14 @@ private fun forecastLocations(root: JsonObject): List<JsonElement> =
 
 fun parseTownNames(root: JsonObject): List<String> =
     forecastLocations(root).mapNotNull { it.text("LocationName") }
+
+/** The town's position as given in a forecast response, or null if the town or its position is absent. */
+fun parseTownCoordinates(root: JsonObject, town: String): Coordinates? {
+    val location = townLocation(root, town)
+    val latitude = location.number("Latitude") ?: return null
+    val longitude = location.number("Longitude") ?: return null
+    return Coordinates(latitude, longitude)
+}
 
 private fun elementPoints(location: JsonElement?, elementName: String): List<ForecastPoint> =
     location.arr("WeatherElement")

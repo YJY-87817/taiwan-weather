@@ -134,7 +134,7 @@ fun WeatherScreen(
             }
             if (snapshot != null) {
                 item { AlertsSection(snapshot.alerts) }
-                snapshot.current?.let { current -> item { CurrentCard(current) } }
+                snapshot.current?.let { current -> item { CurrentCard(current, snapshot.place) } }
                 if (snapshot.hourly.isNotEmpty()) item { HourlySection(snapshot.hourly) }
                 if (snapshot.daily.isNotEmpty()) item { DailySection(snapshot.daily) }
             }
@@ -315,7 +315,7 @@ private fun AlertCard(alert: WeatherAlert) {
 }
 
 @Composable
-private fun CurrentCard(current: CurrentWeather) {
+private fun CurrentCard(current: CurrentWeather, place: Place) {
     val station = current.station
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -327,9 +327,13 @@ private fun CurrentCard(current: CurrentWeather) {
             Text("濕度 ${station.humidity?.roundToInt()?.let { "$it%" } ?: "—"}　氣壓 ${station.pressure.oneDecimal()} hPa")
             Text("風速 ${station.windSpeed.oneDecimal()} m/s　風向 ${windDirection(station.windDirection)}")
             Text("本日雨量 ${station.precipitation.oneDecimal()} mm" + (station.uvIndex?.let { "　紫外線 ${it.roundToInt()}" } ?: ""))
+            // A station outside the town says where it is, so its readings are not taken for the town's own.
+            val elsewhere = station.county != place.county || station.town != place.town
+            val where = "（${station.county}${station.town}）".takeIf { elsewhere && it.length > 2 }.orEmpty()
             val distance = current.distanceKm?.let { "，距離約 ${"%.1f".format(it)} 公里" }.orEmpty()
+            val altitude = station.altitude?.takeIf { elsewhere }?.let { "，海拔 ${it.roundToInt()} 公尺" }.orEmpty()
             Text(
-                "${station.name}測站$distance\n觀測時間 ${station.observedAt?.format(observedFormat) ?: "—"}",
+                "${station.name}測站$where$distance$altitude\n觀測時間 ${station.observedAt?.format(observedFormat) ?: "—"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

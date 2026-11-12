@@ -4,12 +4,12 @@ import android.content.Context
 import java.io.File
 import java.time.OffsetDateTime
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
 
 class WeatherRepository(
     private val source: CachedSource,
@@ -21,11 +21,7 @@ class WeatherRepository(
     override suspend fun loadForPlace(place: Place): WeatherSnapshot = withContext(Dispatchers.IO) {
         source.prune()
         val tracker = OfflineTracker()
-        // The observation loads alongside the forecasts instead of before them.
-        coroutineScope {
-            val current = async { currentForPlace(place, tracker) }
-            snapshot(place, current, tracker)
-        }
+        snapshot(place, tracker) { townCoordinates -> currentForPlace(place, tracker, townCoordinates) }
     }
 
     override suspend fun loadAtCoordinates(latitude: Double, longitude: Double): WeatherSnapshot =
@@ -33,7 +29,7 @@ class WeatherRepository(
             source.prune()
             val tracker = OfflineTracker()
             val (place, current) = resolveByCoordinates(latitude, longitude, tracker)
-            snapshot(place, CompletableDeferred(current), tracker)
+            snapshot(place, tracker) { current }
         }
 
     override suspend fun towns(county: String): List<String> = withContext(Dispatchers.IO) {
@@ -41,19 +37,25 @@ class WeatherRepository(
         parseTownNames(source.fetch(dataset, mapOf("ElementName" to "溫度"), OfflineTracker()))
     }
 
+    /**
+     * [current] loads alongside the forecasts instead of before them. It is handed the town's
+     * position, which comes from the 3-day forecast response and is only awaited if it is needed.
+     */
     private suspend fun snapshot(
         place: Place,
-        current: Deferred<CurrentWeather?>,
         tracker: OfflineTracker,
+        current: suspend (townCoordinates: Deferred<Coordinates?>) -> CurrentWeather?,
     ) =
         coroutineScope {
-            val hourly = async { hourly(place, tracker) }
+            val threeDay = async { threeDayForecast(place, tracker) }
+            val townCoordinates = async { threeDay.await()?.let { parseTownCoordinates(it, place.town) } }
+            val observation = async { current(townCoordinates) }
             val daily = async { daily(place, tracker) }
             val alerts = async { alerts(place.county, tracker) }
             WeatherSnapshot(
                 place = place,
-                current = current.await(),
-                hourly = hourly.await(),
+                current = observation.await(),
+                hourly = threeDay.await()?.let { parseHourly(it, place.town, now()) }.orEmpty(),
                 daily = daily.await(),
                 alerts = alerts.await(),
                 offlineSince = tracker.offlineSince,
@@ -76,26 +78,40 @@ class WeatherRepository(
         return resolveNearest(latitude, longitude, synoptic, all)
     }
 
-    /** Prefers a synoptic station in the town, then any station there, then one in the county. */
-    private suspend fun currentForPlace(place: Place, tracker: OfflineTracker): CurrentWeather? {
+    /**
+     * Prefers a synoptic station in the town, then any station there. A town with no station gets
+     * the one closest to its centre, in whichever county that is, with the distance filled in.
+     */
+    private suspend fun currentForPlace(
+        place: Place,
+        tracker: OfflineTracker,
+        townCoordinates: Deferred<Coordinates?>,
+    ): CurrentWeather? {
         // The larger list is only requested if the synoptic stations do not cover the town.
         val synoptic = stations(SYNOPTIC_DATASET, tracker)
         synoptic.firstOrNull { it.inTown(place) }?.let { return CurrentWeather(it, null) }
         val all = stations(ALL_STATIONS_DATASET, tracker)
-        val station = all.firstOrNull { it.inTown(place) }
-            ?: synoptic.firstOrNull { it.county == place.county }
+        all.firstOrNull { it.inTown(place) }?.let { return CurrentWeather(it, null) }
+
+        val centre = townCoordinates.await()
+        if (centre != null) {
+            nearestStation(centre, synoptic + all)?.let { (station, distance) ->
+                return CurrentWeather(station, distance)
+            }
+        }
+        // Without the town's position, a station in the same county is the best guess left.
+        val station = synoptic.firstOrNull { it.county == place.county }
             ?: all.firstOrNull { it.county == place.county }
         return station?.let { CurrentWeather(it, null) }
     }
 
-    private suspend fun hourly(place: Place, tracker: OfflineTracker): List<HourlyForecast> {
-        val dataset = Counties.threeDayDataset(place.county) ?: return emptyList()
-        val root = source.fetch(
+    private suspend fun threeDayForecast(place: Place, tracker: OfflineTracker): JsonObject? {
+        val dataset = Counties.threeDayDataset(place.county) ?: return null
+        return source.fetch(
             dataset,
             mapOf("LocationName" to place.town, "ElementName" to "溫度,天氣現象,3小時降雨機率", "sort" to "time"),
             tracker,
         )
-        return parseHourly(root, place.town, now())
     }
 
     private suspend fun daily(place: Place, tracker: OfflineTracker): List<DailyForecast> {
