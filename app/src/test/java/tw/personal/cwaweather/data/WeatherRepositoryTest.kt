@@ -78,7 +78,12 @@ class WeatherRepositoryTest {
     }
 
     private fun repository(api: CwaApi, verify: suspend (String) -> Unit = {}) = WeatherRepository(
-        source = CachedSource(api, Files.createTempDirectory("api-cache").toFile()),
+        // Ten minutes ahead of the files' real timestamps, so every load asks the API again.
+        source = CachedSource(
+            api,
+            Files.createTempDirectory("api-cache").toFile(),
+            clock = { System.currentTimeMillis() + 10 * 60 * 1000 },
+        ),
         verify = verify,
         now = { now },
     )
@@ -343,6 +348,25 @@ class WeatherRepositoryTest {
         val api = api()
         assertEquals(listOf("中正區"), repository(api).towns("臺北市"))
         assertEquals("F-D0047-061", api.calls.single().dataset)
+    }
+
+    @Test
+    fun repeatedLoadsWithinMomentsDoNotDownloadAgain() = runBlocking {
+        val api = api()
+        val repository = WeatherRepository(
+            source = CachedSource(api, Files.createTempDirectory("api-cache").toFile()),
+            verify = {},
+            now = { now },
+        )
+        val first = repository.loadForPlace(taipei)
+        val requests = api.calls.size
+        val second = repository.loadForPlace(taipei)
+        repository.towns("臺北市")
+        repository.towns("臺北市")
+
+        assertEquals(requests + 1, api.calls.size)
+        assertEquals(first, second)
+        assertNull(second.offlineSince)
     }
 
     @Test

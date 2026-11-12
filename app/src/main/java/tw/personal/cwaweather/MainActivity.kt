@@ -25,6 +25,7 @@ class MainActivity : ComponentActivity() {
             if (granted) {
                 viewModel.loadDeviceLocation()
             } else {
+                viewModel.showMessage("沒有定位權限，請手動選擇地點；之後要用目前位置，可以到系統設定開啟這個 App 的定位權限。")
                 viewModel.setShowPicker(true)
             }
         }

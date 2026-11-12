@@ -4,6 +4,7 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -24,6 +25,9 @@ class OfflineTracker {
  * Saves each raw API response and falls back to the saved copy when the service cannot be reached.
  * Authorization failures are not hidden by old data, so a bad key still surfaces as an error.
  * A saved copy older than [maxAgeMillis] is not used, so stale weather is never shown as current.
+ *
+ * A copy saved moments ago is returned without asking again, which keeps repeated refreshes and
+ * the shared station lists from downloading the same data over and over.
  */
 class CachedSource(
     private val api: CwaApi,
@@ -41,19 +45,33 @@ class CachedSource(
         dataset: String,
         query: Map<String, String> = emptyMap(),
         tracker: OfflineTracker,
+        freshMillis: Long = DEFAULT_FRESH_MILLIS,
     ): JsonObject {
         val file = fileFor(dataset, query)
+        readFresh(file, freshMillis)?.let { return it }
         val response = try {
             api.datastore(dataset, query)
         } catch (e: IOException) {
             return readSaved(file, tracker) ?: throw e
         } catch (e: HttpException) {
-            if (e.code() < 500) throw e
+            // Too many requests is the service's trouble, like a 5xx. Other 4xx are ours to report.
+            if (e.code() < 500 && e.code() != 429) throw e
+            return readSaved(file, tracker) ?: throw e
+        } catch (e: SerializationException) {
+            // A reply that is not the expected JSON, for example an error page sent with status 200.
             return readSaved(file, tracker) ?: throw e
         }
-        // A failed write must not turn a good response into an error.
-        runCatching { save(file, response) }
+        // A reply without data must not replace a saved one that has it, and a failed write must
+        // not turn a good response into an error.
+        if ((response["records"] as? JsonObject)?.isNotEmpty() == true) runCatching { save(file, response) }
         return response
+    }
+
+    /** A copy saved within [freshMillis] counts as live, so it is not recorded as offline data. */
+    private fun readFresh(file: File, freshMillis: Long): JsonObject? {
+        if (freshMillis <= 0 || !file.exists()) return null
+        if (clock() - file.lastModified() !in 0..freshMillis) return null
+        return runCatching { Json.parseToJsonElement(file.readText()).jsonObject }.getOrNull()
     }
 
     private fun readSaved(file: File, tracker: OfflineTracker): JsonObject? {
@@ -76,6 +94,7 @@ class CachedSource(
 
     companion object {
         const val DEFAULT_MAX_AGE_MILLIS = 24L * 60 * 60 * 1000
+        const val DEFAULT_FRESH_MILLIS = 60L * 1000
     }
 
     private fun fileFor(dataset: String, query: Map<String, String>): File {
