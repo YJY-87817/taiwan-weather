@@ -2,6 +2,12 @@ package tw.personal.cwaweather.data
 
 import java.time.LocalDate
 import java.time.OffsetDateTime
+import java.time.ZoneOffset
+
+/** CWA publishes Taiwan local time, and the app shows it as such wherever the phone is. */
+val TAIWAN_OFFSET: ZoneOffset = ZoneOffset.ofHours(8)
+
+fun OffsetDateTime.inTaiwan(): OffsetDateTime = withOffsetSameInstant(TAIWAN_OFFSET)
 
 data class Place(val county: String, val town: String)
 
@@ -25,6 +31,8 @@ data class Station(
     val dailyLow: Double?,
     /** Metres above sea level. */
     val altitude: Double? = null,
+    /** Rain too slight to measure, which CWA reports as "T" instead of an amount. */
+    val precipitationTrace: Boolean = false,
 )
 
 /** [distanceKm] is from the device or the town's centre to the station, when that is known. */
