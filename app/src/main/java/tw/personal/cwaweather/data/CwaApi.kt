@@ -18,11 +18,13 @@ interface CwaApi {
     ): JsonObject
 
     companion object {
+        private const val BASE_URL = "https://opendata.cwa.gov.tw/api/"
+
         /** Every [create] builds on this one, so they share its connections and threads. */
         private val sharedClient by lazy { OkHttpClient() }
 
         /** [apiKey] is read on every request, so a changed key applies immediately. */
-        fun create(apiKey: () -> String): CwaApi {
+        fun create(baseUrl: String = BASE_URL, apiKey: () -> String): CwaApi {
             // The key is added here so it stays out of call sites. Do not add URL logging to this client.
             val client = sharedClient.newBuilder()
                 .addInterceptor { chain ->
@@ -36,7 +38,7 @@ interface CwaApi {
 
             val json = Json { ignoreUnknownKeys = true }
             return Retrofit.Builder()
-                .baseUrl("https://opendata.cwa.gov.tw/api/")
+                .baseUrl(baseUrl)
                 .client(client)
                 .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
                 .build()
