@@ -1,0 +1,20 @@
+# Keeps the pinned CI actions and the Gradle dependencies current. Updates arrive as pull
+# requests, grouped so that a routine week brings one pull request per ecosystem.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Major versions stay in their own pull requests, since they are the ones that break.
+      minor-and-patch:
+        update-types: [minor, patch]
