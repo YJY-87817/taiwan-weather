@@ -22,6 +22,7 @@ import retrofit2.HttpException
 import retrofit2.Response
 import tw.personal.cwaweather.data.Coordinates
 import tw.personal.cwaweather.data.CredentialStore
+import tw.personal.cwaweather.data.FakeCipher
 import tw.personal.cwaweather.data.FakeSharedPreferences
 import tw.personal.cwaweather.data.LocationProvider
 import tw.personal.cwaweather.data.LocationUnavailableException
@@ -67,7 +68,8 @@ class WeatherViewModelTest {
     private val source = FakeSource()
     private val credentialPrefs = FakeSharedPreferences()
     private val placePrefs = FakeSharedPreferences()
-    private val credentials = CredentialStore(credentialPrefs)
+    private val cipher = FakeCipher()
+    private val credentials = CredentialStore(credentialPrefs, cipher)
     private val places = PlaceStore(placePrefs)
     private var location: suspend () -> Coordinates = { Coordinates(25.04, 121.52) }
 
@@ -90,9 +92,9 @@ class WeatherViewModelTest {
     fun apiKeyPresenceFollowsTheStore() {
         val viewModel = viewModel()
         assertFalse(viewModel.hasApiKey())
-        credentials.apiKey = "  "
+        credentials.save("  ")
         assertFalse(viewModel.hasApiKey())
-        credentials.apiKey = "KEY"
+        credentials.save("KEY")
         assertTrue(viewModel.hasApiKey())
     }
 
@@ -365,6 +367,44 @@ class WeatherViewModelTest {
         assertEquals(listOf("FIRST"), candidates)
         assertEquals("FIRST", credentials.apiKey)
         assertFalse(viewModel.uiState.value.verifyingKey)
+    }
+
+    @Test
+    fun keyThatCannotBeEncryptedIsNotSavedAndSaysWhy() {
+        cipher.encryptFails = true
+        val viewModel = viewModel()
+        viewModel.setAskForKey(true)
+        viewModel.saveApiKey("KEY")
+
+        val state = viewModel.uiState.value
+        assertTrue(state.keyError!!.contains("無法加密"))
+        assertFalse(state.verifyingKey)
+        assertTrue(state.askForKey)
+        assertFalse(state.hasApiKey)
+        cipher.encryptFails = false
+        assertEquals("", CredentialStore(credentialPrefs, cipher).apiKey)
+    }
+
+    @Test
+    fun missingKeyAtStartAsksForOne() {
+        val viewModel = viewModel()
+        viewModel.askForMissingKey()
+
+        assertTrue(viewModel.uiState.value.askForKey)
+        assertTrue(viewModel.uiState.value.message!!.contains("需要氣象署授權碼"))
+    }
+
+    @Test
+    fun unreadableStoredKeyAsksForItAgainAndSaysWhy() {
+        CredentialStore(credentialPrefs, cipher).save("KEY")
+        cipher.decryptFails = true
+        val credentials = CredentialStore(credentialPrefs, cipher)
+        val viewModel = WeatherViewModel(credentials, source, places, LocationProvider { location() })
+
+        assertFalse(viewModel.hasApiKey())
+        viewModel.askForMissingKey()
+        assertTrue(viewModel.uiState.value.askForKey)
+        assertTrue(viewModel.uiState.value.message!!.contains("無法讀取"))
     }
 
     @Test
