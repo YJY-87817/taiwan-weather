@@ -29,7 +29,7 @@ dependencies {
     constraints {
         // play-services-location pulls in fragment 1.1.0 transitively. The app has no fragments, but
         // lint (InvalidFragmentVersionForActivityResult) wants 1.3.0+ next to registerForActivityResult.
-        implementation("androidx.fragment:fragment:1.8.9") {
+        implementation("androidx.fragment:fragment:1.9.1") {
             because("raise the transitive fragment 1.1.0 from play-services-location")
         }
     }
@@ -43,13 +43,13 @@ dependencies {
 
     implementation("com.squareup.retrofit2:retrofit:3.0.0")
     implementation("com.squareup.retrofit2:converter-kotlinx-serialization:3.0.0")
-    implementation("com.squareup.okhttp3:okhttp:5.1.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
 
     implementation("com.google.android.gms:play-services-location:21.4.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.11.0")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("com.squareup.okhttp3:mockwebserver3:5.1.0")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver3:5.5.1")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
 }
