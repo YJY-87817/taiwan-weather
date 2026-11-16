@@ -48,14 +48,17 @@ class WeatherViewModelTest {
         var townsOf: suspend (String) -> List<String> = { emptyList() }
         val placeLoads = mutableListOf<Place>()
         val coordinateLoads = mutableListOf<Coordinates>()
+        val refreshFlags = mutableListOf<Boolean>()
 
         override suspend fun verifyKey(candidate: String) = verify(candidate)
-        override suspend fun loadForPlace(place: Place): WeatherSnapshot {
+        override suspend fun loadForPlace(place: Place, refresh: Boolean): WeatherSnapshot {
             placeLoads += place
+            refreshFlags += refresh
             return forPlace(place)
         }
-        override suspend fun loadAtCoordinates(latitude: Double, longitude: Double): WeatherSnapshot {
+        override suspend fun loadAtCoordinates(latitude: Double, longitude: Double, refresh: Boolean): WeatherSnapshot {
             coordinateLoads += Coordinates(latitude, longitude)
+            refreshFlags += refresh
             return atCoordinates(latitude, longitude)
         }
         override suspend fun towns(county: String) = townsOf(county)
@@ -219,6 +222,20 @@ class WeatherViewModelTest {
         viewModel.refresh()
         assertEquals(2, source.coordinateLoads.size)
         assertEquals(2, source.placeLoads.size)
+    }
+
+    @Test
+    fun onlyTheRefreshButtonAsksForFreshData() {
+        source.forPlace = { snapshot(it) }
+        source.atCoordinates = { _, _ -> snapshot(kaohsiung) }
+        val viewModel = viewModel()
+
+        viewModel.selectPlace(taipei)
+        viewModel.refresh()
+        viewModel.loadDeviceLocation()
+        viewModel.refresh()
+
+        assertEquals(listOf(false, true, false, true), source.refreshFlags)
     }
 
     @Test

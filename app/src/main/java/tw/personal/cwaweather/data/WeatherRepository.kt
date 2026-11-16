@@ -15,22 +15,24 @@ import retrofit2.HttpException
 class WeatherRepository(
     private val source: CachedSource,
     private val verify: suspend (String) -> Unit,
+    private val townPositions: TownPositionStore,
     private val now: () -> OffsetDateTime = OffsetDateTime::now,
 ) : WeatherSource {
     override suspend fun verifyKey(candidate: String) = verify(candidate)
 
-    override suspend fun loadForPlace(place: Place): WeatherSnapshot = withContext(Dispatchers.IO) {
-        source.prune()
-        val tracker = OfflineTracker()
-        snapshot(place, tracker) { townCoordinates -> currentForPlace(place, tracker, townCoordinates) }
-    }
-
-    override suspend fun loadAtCoordinates(latitude: Double, longitude: Double): WeatherSnapshot =
+    override suspend fun loadForPlace(place: Place, refresh: Boolean): WeatherSnapshot =
         withContext(Dispatchers.IO) {
             source.prune()
-            val tracker = OfflineTracker()
-            val (place, current) = resolveByCoordinates(latitude, longitude, tracker)
-            snapshot(place, tracker) { current }
+            val load = Load(refresh)
+            snapshot(place, load) { townCoordinates -> currentForPlace(place, load, townCoordinates) }
+        }
+
+    override suspend fun loadAtCoordinates(latitude: Double, longitude: Double, refresh: Boolean): WeatherSnapshot =
+        withContext(Dispatchers.IO) {
+            source.prune()
+            val load = Load(refresh)
+            val (place, current) = resolveByCoordinates(latitude, longitude, load)
+            snapshot(place, load) { current }
         }
 
     override suspend fun towns(county: String): List<String> = withContext(Dispatchers.IO) {
@@ -42,25 +44,42 @@ class WeatherRepository(
     }
 
     /**
+     * The requests behind one screen of data. It records any saved copies used, and with [refresh]
+     * it asks CWA every time instead of reusing a copy saved moments ago.
+     */
+    private inner class Load(private val refresh: Boolean) {
+        val tracker = OfflineTracker()
+
+        suspend fun fetch(
+            dataset: String,
+            query: Map<String, String> = emptyMap(),
+            freshMillis: Long = CachedSource.DEFAULT_FRESH_MILLIS,
+        ): JsonObject = source.fetch(dataset, query, tracker, if (refresh) 0 else freshMillis)
+    }
+
+    /**
      * [current] loads alongside the forecasts instead of before them. It is handed the town's
      * position, which comes from the 3-day forecast response and is only awaited if it is needed.
+     * A position read there is kept, and a kept one is used when the forecast cannot be read.
      *
      * The observation and the two forecasts fail separately, so what did load is still shown. The
      * load as a whole fails only when all three do, or when CWA rejects the key.
      */
     private suspend fun snapshot(
         place: Place,
-        tracker: OfflineTracker,
+        load: Load,
         current: suspend (townCoordinates: Deferred<Coordinates?>) -> CurrentWeather?,
     ) =
         coroutineScope {
-            val threeDay = async { attempt { threeDayForecast(place, tracker) } }
+            val threeDay = async { attempt { threeDayForecast(place, load) } }
             val townCoordinates = async {
                 threeDay.await().getOrNull()?.let { parseTownCoordinates(it, place.town) }
+                    ?.also { townPositions[place] = it }
+                    ?: townPositions[place]
             }
             val observation = async { attempt { current(townCoordinates) } }
-            val week = async { attempt { daily(place, tracker) } }
-            val alerts = async { alerts(place.county, tracker) }
+            val week = async { attempt { daily(place, load) } }
+            val alerts = async { alerts(place.county, load) }
 
             val currentResult = observation.await()
             val hourlyResult = threeDay.await().map { root ->
@@ -76,7 +95,7 @@ class WeatherRepository(
                 hourly = hourlyResult.getOrNull(),
                 daily = dailyResult.getOrNull(),
                 alerts = alerts.await(),
-                offlineSince = tracker.offlineSince,
+                offlineSince = load.tracker.offlineSince,
                 currentUnavailable = currentResult.isFailure,
             )
         }
@@ -91,18 +110,18 @@ class WeatherRepository(
         Result.failure(e)
     }
 
-    private suspend fun stations(dataset: String, tracker: OfflineTracker) =
-        parseStations(source.fetch(dataset, tracker = tracker, freshMillis = STATIONS_FRESH_MILLIS))
+    private suspend fun stations(dataset: String, load: Load) =
+        parseStations(load.fetch(dataset, freshMillis = STATIONS_FRESH_MILLIS))
             .filter { it.temperature != null }
 
     private suspend fun resolveByCoordinates(
         latitude: Double,
         longitude: Double,
-        tracker: OfflineTracker,
+        load: Load,
     ): Pair<Place, CurrentWeather> {
         val (synoptic, all) = coroutineScope {
-            val synopticStations = async { stations(SYNOPTIC_DATASET, tracker) }
-            val allStations = async { stations(ALL_STATIONS_DATASET, tracker) }
+            val synopticStations = async { stations(SYNOPTIC_DATASET, load) }
+            val allStations = async { stations(ALL_STATIONS_DATASET, load) }
             synopticStations.await() to allStations.await()
         }
         return resolveNearest(latitude, longitude, synoptic, all)
@@ -114,13 +133,13 @@ class WeatherRepository(
      */
     private suspend fun currentForPlace(
         place: Place,
-        tracker: OfflineTracker,
+        load: Load,
         townCoordinates: Deferred<Coordinates?>,
     ): CurrentWeather? {
         // The larger list is only requested if the synoptic stations do not cover the town.
-        val synoptic = stations(SYNOPTIC_DATASET, tracker)
+        val synoptic = stations(SYNOPTIC_DATASET, load)
         synoptic.firstOrNull { it.inTown(place) }?.let { return CurrentWeather(it, null) }
-        val all = stations(ALL_STATIONS_DATASET, tracker)
+        val all = stations(ALL_STATIONS_DATASET, load)
         all.firstOrNull { it.inTown(place) }?.let { return CurrentWeather(it, null) }
 
         val centre = townCoordinates.await()
@@ -129,40 +148,38 @@ class WeatherRepository(
                 return CurrentWeather(station, distance)
             }
         }
-        // Without the town's position, a station in the same county is the best guess left.
+        // Without the town's position, now or ever, a station in the same county is the best guess left.
         val station = synoptic.firstOrNull { it.county == place.county }
             ?: all.firstOrNull { it.county == place.county }
         return station?.let { CurrentWeather(it, null) }
     }
 
-    private suspend fun threeDayForecast(place: Place, tracker: OfflineTracker): JsonObject? {
+    private suspend fun threeDayForecast(place: Place, load: Load): JsonObject? {
         val dataset = Counties.threeDayDataset(place.county) ?: return null
-        return source.fetch(
+        return load.fetch(
             dataset,
             mapOf("LocationName" to place.town, "ElementName" to "溫度,天氣現象,3小時降雨機率", "sort" to "time"),
-            tracker,
         )
     }
 
-    private suspend fun daily(place: Place, tracker: OfflineTracker): List<DailyForecast> {
+    private suspend fun daily(place: Place, load: Load): List<DailyForecast> {
         val dataset = Counties.weeklyDataset(place.county) ?: return emptyList()
-        val root = source.fetch(
+        val root = load.fetch(
             dataset,
             mapOf(
                 "LocationName" to place.town,
                 "ElementName" to "最高溫度,最低溫度,天氣現象,12小時降雨機率",
                 "sort" to "time",
             ),
-            tracker,
         )
         return parseDaily(root, place.town, now())
     }
 
     /** A failure here returns null so the forecast can still be shown. */
-    private suspend fun alerts(county: String, tracker: OfflineTracker): List<WeatherAlert>? = try {
+    private suspend fun alerts(county: String, load: Load): List<WeatherAlert>? = try {
         parseAlerts(
-            byCounty = source.fetch("W-C0033-001", tracker = tracker),
-            details = source.fetch("W-C0033-002", tracker = tracker),
+            byCounty = load.fetch("W-C0033-001"),
+            details = load.fetch("W-C0033-002"),
             county = county,
             now = now(),
         )
@@ -186,6 +203,7 @@ class WeatherRepository(
         fun create(context: Context, credentials: CredentialStore) = WeatherRepository(
             source = CachedSource(CwaApi.create { credentials.apiKey }, File(context.filesDir, "api-cache")),
             verify = { candidate -> CwaApi.create { candidate }.datastore("W-C0033-001") },
+            townPositions = TownPositionStore(context),
         )
     }
 }

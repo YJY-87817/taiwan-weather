@@ -46,6 +46,18 @@ class DisplayTest {
     }
 
     @Test
+    fun directionCode990MeansTheWindKeepsChanging() {
+        assertEquals("風向不定", windDirectionText(0.6, 990.0))
+        // No wind still wins, whatever the direction value.
+        assertEquals("靜風", windDirectionText(0.0, 990.0))
+    }
+
+    @Test
+    fun directionOutsideACircleIsUnknown() {
+        assertEquals("—", windDirectionText(3.0, 400.0))
+    }
+
+    @Test
     fun rainIsAnAmountATraceOrUnknown() {
         assertEquals("1.5 mm", rainText(station(precipitation = 1.5)))
         assertEquals("0.0 mm", rainText(station(precipitation = 0.0)))
