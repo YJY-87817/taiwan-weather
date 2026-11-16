@@ -11,13 +11,19 @@ import tw.personal.cwaweather.data.inTaiwan
 internal fun favoriteLabel(place: Place, favorites: List<Place>): String =
     if (favorites.any { it != place && it.town == place.town }) "${place.county}${place.town}" else place.town
 
-/** No wind has no direction, whatever direction value the station reports with it. */
+/**
+ * No wind has no direction, whatever direction value the station reports with it. CWA reports a
+ * direction that keeps changing as 990, which is not an angle.
+ */
 internal fun windDirectionText(speed: Double?, degrees: Double?): String {
     if (speed == 0.0) return "靜風"
-    if (degrees == null) return "—"
+    if (degrees == VARIABLE_WIND_DIRECTION) return "風向不定"
+    if (degrees == null || degrees !in 0.0..360.0) return "—"
     val names = listOf("北", "東北", "東", "東南", "南", "西南", "西", "西北")
     return names[((degrees / 45).roundToInt() % 8 + 8) % 8]
 }
+
+private const val VARIABLE_WIND_DIRECTION = 990.0
 
 internal fun rainText(station: Station): String = when {
     station.precipitationTrace -> "微量"

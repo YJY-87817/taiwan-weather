@@ -1,6 +1,5 @@
 package tw.personal.cwaweather
 
-import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.viewModelScope
@@ -126,23 +125,28 @@ class WeatherViewModel(
     fun refresh() {
         val current = state.value
         when {
-            current.usesDeviceLocation -> loadDeviceLocation()
-            current.place != null -> selectPlace(current.place)
+            // Asked for by the user, so it does not settle for data saved moments ago.
+            current.usesDeviceLocation -> loadDevice(refresh = true)
+            current.place != null -> loadPlace(current.place, refresh = true)
         }
     }
 
-    fun selectPlace(place: Place) {
+    fun selectPlace(place: Place) = loadPlace(place, refresh = false)
+
+    fun loadDeviceLocation() = loadDevice(refresh = false)
+
+    private fun loadPlace(place: Place, refresh: Boolean) {
         launchLoad(place, usesDeviceLocation = false) {
             // Remembered only once it loads, so a failure keeps the previous choice.
-            repository.loadForPlace(place).also { places.selected = place }
+            repository.loadForPlace(place, refresh).also { places.selected = place }
         }
     }
 
-    fun loadDeviceLocation() {
+    private fun loadDevice(refresh: Boolean) {
         launchLoad(state.value.place, usesDeviceLocation = true) {
             val location = locationProvider.current()
             // Forget the chosen place only after the device location worked.
-            repository.loadAtCoordinates(location.latitude, location.longitude)
+            repository.loadAtCoordinates(location.latitude, location.longitude, refresh)
                 .also { places.selected = null }
         }
     }
@@ -218,7 +222,7 @@ class WeatherViewModel(
     companion object {
         val Factory = viewModelFactory {
             initializer {
-                val application = checkNotNull(this[APPLICATION_KEY]) as Application
+                val application = checkNotNull(this[APPLICATION_KEY])
                 val credentials = CredentialStore(application)
                 WeatherViewModel(
                     credentials = credentials,

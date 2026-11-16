@@ -77,7 +77,11 @@ class WeatherRepositoryTest {
         }
     }
 
-    private fun repository(api: CwaApi, verify: suspend (String) -> Unit = {}) = WeatherRepository(
+    private fun repository(
+        api: CwaApi,
+        verify: suspend (String) -> Unit = {},
+        townPositions: TownPositionStore = TownPositionStore(FakeSharedPreferences()),
+    ) = WeatherRepository(
         // Ten minutes ahead of the files' real timestamps, so every load asks the API again.
         source = CachedSource(
             api,
@@ -85,6 +89,7 @@ class WeatherRepositoryTest {
             clock = { System.currentTimeMillis() + 10 * 60 * 1000 },
         ),
         verify = verify,
+        townPositions = townPositions,
         now = { now },
     )
 
@@ -353,11 +358,7 @@ class WeatherRepositoryTest {
     @Test
     fun repeatedLoadsWithinMomentsDoNotDownloadAgain() = runBlocking {
         val api = api()
-        val repository = WeatherRepository(
-            source = CachedSource(api, Files.createTempDirectory("api-cache").toFile()),
-            verify = {},
-            now = { now },
-        )
+        val repository = realClockRepository(api)
         val first = repository.loadForPlace(taipei)
         val requests = api.calls.size
         val second = repository.loadForPlace(taipei)
@@ -367,6 +368,57 @@ class WeatherRepositoryTest {
         assertEquals(requests + 1, api.calls.size)
         assertEquals(first, second)
         assertNull(second.offlineSince)
+    }
+
+    /** Uses the cache's real clock, so a copy saved moments ago counts as fresh. */
+    private fun realClockRepository(api: CwaApi) = WeatherRepository(
+        source = CachedSource(api, Files.createTempDirectory("api-cache").toFile()),
+        verify = {},
+        townPositions = TownPositionStore(FakeSharedPreferences()),
+        now = { now },
+    )
+
+    @Test
+    fun refreshAsksForEverythingAgainButKeepsTheTownList() = runBlocking {
+        val api = api()
+        val repository = realClockRepository(api)
+        repository.towns("臺北市")
+        val start = api.calls.size
+        repository.loadForPlace(taipei)
+        val oneLoad = api.calls.size - start
+
+        repository.loadForPlace(taipei, refresh = true)
+        assertEquals(start + 2 * oneLoad, api.calls.size)
+
+        repository.loadAtCoordinates(25.0401, 121.5201)
+        val afterCoordinates = api.calls.size
+        repository.loadAtCoordinates(25.0401, 121.5201, refresh = true)
+        assertEquals(
+            setOf("O-A0003-001", "O-A0001-001", "F-D0047-061", "F-D0047-063", "W-C0033-001", "W-C0033-002"),
+            api.calls.drop(afterCoordinates).map { it.dataset }.toSet(),
+        )
+
+        repository.towns("臺北市")
+        assertEquals(1, api.calls.count { it.query == mapOf("ElementName" to "溫度") })
+    }
+
+    @Test
+    fun keptTownPositionPicksTheNearestStationWhenTheForecastFails() = runBlocking {
+        val positions = TownPositionStore(FakeSharedPreferences())
+        // The forecast fixture puts 中正區 at 25.046, 121.517; a first load keeps that position.
+        repository(api(), townPositions = positions).loadForPlace(taipei)
+
+        val stations = stationList(
+            stationsJson("臺北市", "北投區", 25.18, 121.54, id = "FAR"),
+            stationsJson("臺北市", "信義區", 25.03, 121.56, id = "NEARBY"),
+        )
+        // A new cache, so no saved forecast can stand in for the failed one.
+        val failing = api(synoptic = stations, override = failing("F-D0047-061", error = { httpError(500) }))
+        val snapshot = repository(failing, townPositions = positions).loadForPlace(taipei)
+
+        assertNull(snapshot.hourly)
+        assertEquals("NEARBY", snapshot.current?.station?.id)
+        assertNotNull(snapshot.current?.distanceKm)
     }
 
     @Test
@@ -379,10 +431,10 @@ class WeatherRepositoryTest {
     @Test
     fun verifyKeyPassesTheCandidateAndPropagatesFailure() {
         val seen = mutableListOf<String>()
-        val repository = repository(api()) { candidate ->
+        val repository = repository(api(), verify = { candidate ->
             seen += candidate
             if (candidate == "bad") throw httpError(403)
-        }
+        })
         runBlocking { repository.verifyKey("good") }
         assertThrows(HttpException::class.java) { runBlocking { repository.verifyKey("bad") } }
         assertEquals(listOf("good", "bad"), seen)
