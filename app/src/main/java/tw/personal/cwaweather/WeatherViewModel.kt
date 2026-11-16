@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import tw.personal.cwaweather.data.CredentialStore
 import tw.personal.cwaweather.data.FusedLocationProvider
+import tw.personal.cwaweather.data.KeyStorageException
 import tw.personal.cwaweather.data.LocationProvider
 import tw.personal.cwaweather.data.LocationUnavailableException
 import tw.personal.cwaweather.data.OutsideTaiwanException
@@ -66,6 +67,18 @@ class WeatherViewModel(
 
     fun hasApiKey(): Boolean = credentials.apiKey.isNotBlank()
 
+    /** Opens the key prompt at start, saying so if a stored code could no longer be read. */
+    fun askForMissingKey() {
+        showMessage(
+            if (credentials.takeLostKeyNotice()) {
+                "儲存的授權碼無法讀取，請重新輸入。"
+            } else {
+                "需要氣象署授權碼才能取得天氣資料。"
+            },
+        )
+        setAskForKey(true)
+    }
+
     fun setAskForKey(ask: Boolean) = state.update { it.copy(askForKey = ask, keyError = null) }
 
     fun clearKeyError() = state.update { it.copy(keyError = null) }
@@ -86,7 +99,12 @@ class WeatherViewModel(
                 state.update { it.copy(verifyingKey = false, keyError = error) }
                 return@launch
             }
-            credentials.apiKey = candidate
+            try {
+                credentials.save(candidate)
+            } catch (e: KeyStorageException) {
+                state.update { it.copy(verifyingKey = false, keyError = "這支手機無法加密儲存授權碼，所以沒有儲存。") }
+                return@launch
+            }
             state.update {
                 it.copy(
                     verifyingKey = false,

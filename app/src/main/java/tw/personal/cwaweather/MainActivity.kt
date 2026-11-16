@@ -60,8 +60,7 @@ class MainActivity : ComponentActivity() {
 
     private fun start() {
         if (!viewModel.hasApiKey()) {
-            viewModel.showMessage("需要氣象署授權碼才能取得天氣資料。")
-            viewModel.setAskForKey(true)
+            viewModel.askForMissingKey()
             return
         }
         val saved = viewModel.savedPlace()
