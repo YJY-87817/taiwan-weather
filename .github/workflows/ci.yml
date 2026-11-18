@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets the owner build an APK from any branch with the "Run workflow" button.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -38,6 +40,12 @@ jobs:
 
       - name: Build debug APK
         run: sh ./gradlew assembleDebug --console=plain
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
 
       # Kept for passing runs too, so lint warnings can be read without failing the build.
       - name: Upload test and lint reports
